@@ -35,6 +35,24 @@ python3 tools/ccld_monitor.py --once --all /tmp/ccld/rank-*.jsonl
 
 持续监控可省略 `--once`；`--timeout-ms` 控制缺 rank 的安静等待时间，`--slow-skew-ms` 控制同机 enqueue 时间差阈值。论文指出跨节点时钟不能作为核心判断依据；当前偏斜观察只限单节点，未来 slow 判断需增加各 channel 的 send/recv count 与 rate，而非把跨节点时间戳直接比较。
 
+## 双节点验证
+
+双节点验证使用 MPI 负责启动和广播 RCCL unique ID，RCCL communicator 使用全局 rank，日志写入共享 `/workspace`：
+
+```bash
+export LD_LIBRARY_PATH=/workspace/CCL-D/ccld-artifacts/dtk-26.04-gfx936-try1/install/lib:$LD_LIBRARY_PATH
+export RCCL_CCLD_ENABLE=1
+export RCCL_CCLD_LOG=/workspace/CCL-D/ccld-artifacts/multinode-logs/rank-{rank}.jsonl
+/opt/mpi/bin/mpirun --allow-run-as-root --host HPDPS-6,HPDPS-7 -np 2 \
+  --map-by ppr:1:node --mca plm_rsh_args '-p 2234' \
+  -x LD_LIBRARY_PATH -x RCCL_CCLD_ENABLE -x RCCL_CCLD_LOG \
+  /workspace/CCL-D/ccld-artifacts/multinode-test/multinode_allreduce_smoke
+python3 tools/ccld_monitor.py --once --all \
+  /workspace/CCL-D/ccld-artifacts/multinode-logs/rank-*.jsonl
+```
+
+已验证两节点各一个 rank 的 `ncclAllReduce` 返回 `PASS`，结果值为 `3`，MPI 退出码为 `0`，completion 聚合状态为 `OK`。跨节点记录的单调时钟差异不会触发 `ENQUEUE_SKEW`；monitor 仅在 `nnodes=1` 时进行该项判断。
+
 ## 手动注入与检测测试
 
 故障注入仅改动 CCL-D 诊断记录，不改实际 collective 参数、communicator 或 RCCL 执行流程。支持：
