@@ -81,3 +81,13 @@ RCCL_CCLD_LIBDIR=/workspace/CCL-D/ccld-artifacts/dtk-26.04-gfx936-try1/install/l
 本阶段已增加第一版 kernel 级诊断：复用 RCCL 的 `ENABLE_COLLTRACE` device→host buffer，在每个 channel 的 kernel 生命周期内维护 `sendCount/recvCount`，并在 Simple、LL、LL128 primitive 完成一个操作后按 peer 数累加字节数；kernel end 由 host 诊断线程输出 `phase=complete`。monitor 会按 rank 汇总 completion，并报告 `COUNT_MISMATCH` 或 `MISSING_COMPLETION`。它可以验证“rank 是否完成 kernel，以及各 rank 的逻辑收发字节数是否一致”。
 
 仍需继续完善的部分是：将计数按 trace slot 而不是按当前 channel kernel 汇总；为每轮操作保存稳定的 start/end 和算法/协议字段；diagnostic thread 计算相邻采样的 sendRate/recvRate；tree 按同层 rank 比较；以及对 graph、CollNet、NVLS、MSCCL 路径补充计数。由于当前记录还没有 peer/edge 拓扑，monitor 对算法为 ring 或 tree 且各 rank 计数不同的 completion 返回 `TOPOLOGY_PENDING`，避免把合法的 ring 边数差异误报为故障；只有未带算法元数据的合成记录才会直接触发 `COUNT_MISMATCH`。当前计数注入仍然是诊断侧自检，不会让 RCCL 真正产生错误通信；故障脚本可模拟 kernel 停滞、慢速和缺失，并由单元测试覆盖 analyzer 分支。
+
+## 8 rank 跨节点实测
+
+HPDPS-6 和 HPDPS-7 各启动 4 个 rank 的 AllReduce 已通过，8 个 rank 均返回 `PASS`，结果为 36，MPI 退出码为 0。启动时需要 `--mca plm_rsh_args "-p 2234"`，并导出 `/opt/hyhal/lib`、`/opt/dtk`、MPI 及独立 CCL-D 安装目录的库路径。
+
+使用 `RCCL_CCLD_FAULT=op_mismatch`、`RCCL_CCLD_FAULT_RANK=7`、`RCCL_CCLD_FAULT_COUNTER=0` 后，远端 rank 7 的 JSONL 记录出现 `CCLD_INJECTED_OP_MISMATCH`，`ccld_monitor.py --fail-on-anomaly` 返回退出码 2 和 `MISMATCH`。注入只改诊断记录，通信数据面仍完成，适合验证 monitor 链路。
+
+## UCX 升级
+
+两节点当前均为 UCX 1.15.0，Open MPI 5.0.3 的 `libmpi.so` 从 `/opt/ucx` 加载 UCX，并提示组件要求 API >= 1.16。建议使用同一源码和配置在两节点并行安装到独立前缀 `/opt/ucx-1.16.x`，保留 `/opt/ucx` 回滚。仅通过 `LD_LIBRARY_PATH=/opt/ucx-1.16.x/lib:/opt/mpi/lib:$LD_LIBRARY_PATH` 验证 `ucx_info`、MPI 的 `ldd` 和 `mpirun --mca pml ucx`，确认通过后再切换默认环境；本次没有覆盖现有 UCX。
