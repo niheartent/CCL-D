@@ -37,6 +37,7 @@ def analyze(records, *, now_ns=None, timeout_ms=2000, slow_skew_ms=2):
     for (comm_id, counter), rows in sorted(groups.items()):
         ranks = sorted({int(row.get("rank", -1)) for row in rows})
         expected = max((int(row.get("nranks", 1)) for row in rows), default=1)
+        nnodes = max((int(row.get("nnodes", 1)) for row in rows), default=1)
         expected_ranks = list(range(expected))
         missing = sorted(set(expected_ranks) - set(ranks))
         mismatches = {field: sorted({str(row.get(field)) for row in rows})
@@ -51,7 +52,7 @@ def analyze(records, *, now_ns=None, timeout_ms=2000, slow_skew_ms=2):
             status = "MISSING_RANK"
         elif missing:
             status = "PENDING"
-        elif skew_ms >= slow_skew_ms:
+        elif nnodes <= 1 and skew_ms >= slow_skew_ms:
             # This is only host enqueue timing.  It is not a send/recv-rate
             # measurement and must not be presented as a communication slow diagnosis.
             status = "ENQUEUE_SKEW"
@@ -61,7 +62,8 @@ def analyze(records, *, now_ns=None, timeout_ms=2000, slow_skew_ms=2):
                         "trace_id": rows[0].get("trace_id"), "status": status,
                         "ranks": ranks, "expected_ranks": expected_ranks,
                         "missing_ranks": missing, "mismatches": mismatches,
-                        "skew_ms": round(skew_ms, 3), "age_ms": round(age_ms, 1),
+                        "nnodes": nnodes, "skew_ms": round(skew_ms, 3),
+                        "age_ms": round(age_ms, 1),
                         "records": len(rows)})
     return results
 

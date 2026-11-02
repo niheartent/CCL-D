@@ -59,6 +59,15 @@ class CcldAnalyzeTest(unittest.TestCase):
                          now_ns=8_000_000_001, slow_skew_ms=2)[0]
         self.assertEqual(result["status"], "ENQUEUE_SKEW")
 
+    def test_does_not_compare_enqueue_clock_across_nodes(self):
+        first = record(0, ts=1_000_000_000, nranks=2)
+        second = record(1, ts=8_000_000_000, nranks=2)
+        first["nnodes"] = second["nnodes"] = 2
+        result = analyze([first, second], now_ns=8_000_000_001,
+                         slow_skew_ms=2)[0]
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["nnodes"], 2)
+
     def test_jsonl_loader_ignores_partial_line_and_non_enqueue_events(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "rank-0.jsonl"
