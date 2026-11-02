@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <unistd.h>
 #include <vector>
 
 #define MPI_CHECK(call) do { int e = (call); if (e != MPI_SUCCESS) MPI_Abort(MPI_COMM_WORLD, e); } while (0)
@@ -41,7 +42,10 @@ int main(int argc, char** argv) {
   const float expected = static_cast<float>(nranks * (nranks + 1) / 2);
   int bad = 0;
   for (float v : host) if (v != expected) { bad = 1; break; }
-  std::printf("rank=%d host=%s local_rank=%d result=%s value=%g\n", rank, std::getenv("HOSTNAME") ?: "?", local_rank, bad ? "FAIL" : "PASS", host[0]);
+  char hostname[256] = "?";
+  gethostname(hostname, sizeof(hostname) - 1);
+  hostname[sizeof(hostname) - 1] = '\0';
+  std::printf("rank=%d host=%s local_rank=%d result=%s value=%g\n", rank, hostname, local_rank, bad ? "FAIL" : "PASS", host[0]);
   MPI_CHECK(MPI_Allreduce(MPI_IN_PLACE, &bad, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD));
   NCCL_CHECK(ncclCommDestroy(comm));
   HIP_CHECK(hipFree(device));
