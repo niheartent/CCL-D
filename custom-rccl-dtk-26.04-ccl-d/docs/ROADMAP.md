@@ -9,6 +9,7 @@
 - 8 rank（每节点 4 rank）跨节点 AllReduce 正确性和 monitor 正常路径通过。
 - 远端 rank 的 op_mismatch 故障注入能够报告 MISMATCH。
 - Python analyzer/monitor 单元测试通过。
+- 标准化 8 rank 验收脚本已通过 UCX 1.16.0 回归，远端 hostname 记录已改为 gethostname()。
 
 ## P0：验收入口和正确性矩阵
 
