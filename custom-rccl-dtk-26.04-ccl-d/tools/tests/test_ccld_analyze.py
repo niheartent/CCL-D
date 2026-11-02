@@ -114,6 +114,15 @@ class CcldAnalyzeTest(unittest.TestCase):
                  "protocol": 0, "send_count": 4, "recv_count": 4}]
         self.assertEqual(analyze_completions(rows)[0]["status"], "TOPOLOGY_PENDING")
 
+    def test_multinode_unknown_algorithm_count_waits_for_topology(self):
+        rows = [{"phase": "complete", "comm_id": "abcd", "counter": 5,
+                 "rank": 0, "nranks": 2, "nnodes": 2,
+                 "send_count": 8, "recv_count": 8},
+                {"phase": "complete", "comm_id": "abcd", "counter": 5,
+                 "rank": 1, "nranks": 2, "nnodes": 2,
+                 "send_count": 4, "recv_count": 4}]
+        self.assertEqual(analyze_completions(rows)[0]["status"], "TOPOLOGY_PENDING")
+
 
 if __name__ == "__main__":
     unittest.main()

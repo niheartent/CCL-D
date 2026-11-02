@@ -31,21 +31,30 @@ int main(int argc, char** argv) {
   NCCL_CHECK(ncclCommInitRank(&comm, nranks, id, rank));
   hipStream_t stream;
   HIP_CHECK(hipStreamCreate(&stream));
-  constexpr int count = 1024;
+  const int count = std::getenv("CCLD_COUNT") ? std::atoi(std::getenv("CCLD_COUNT")) : 1024;
+  const int iterations = std::getenv("CCLD_ITERS") ? std::atoi(std::getenv("CCLD_ITERS")) : 1;
+  if (count <= 0 || iterations <= 0) {
+    if (rank == 0) std::fprintf(stderr, "CCLD_COUNT and CCLD_ITERS must be positive\n");
+    MPI_Abort(MPI_COMM_WORLD, 2);
+  }
   std::vector<float> host(count, static_cast<float>(rank + 1));
   float* device = nullptr;
   HIP_CHECK(hipMalloc(&device, count * sizeof(float)));
-  HIP_CHECK(hipMemcpyAsync(device, host.data(), count * sizeof(float), hipMemcpyHostToDevice, stream));
-  NCCL_CHECK(ncclAllReduce(device, device, count, ncclFloat32, ncclSum, comm, stream));
-  HIP_CHECK(hipStreamSynchronize(stream));
-  HIP_CHECK(hipMemcpy(host.data(), device, count * sizeof(float), hipMemcpyDeviceToHost));
   const float expected = static_cast<float>(nranks * (nranks + 1) / 2);
   int bad = 0;
-  for (float v : host) if (v != expected) { bad = 1; break; }
   char hostname[256] = "?";
   gethostname(hostname, sizeof(hostname) - 1);
   hostname[sizeof(hostname) - 1] = '\0';
-  std::printf("rank=%d host=%s local_rank=%d result=%s value=%g\n", rank, hostname, local_rank, bad ? "FAIL" : "PASS", host[0]);
+  for (int iteration = 0; iteration < iterations; ++iteration) {
+    std::fill(host.begin(), host.end(), static_cast<float>(rank + 1));
+    HIP_CHECK(hipMemcpyAsync(device, host.data(), count * sizeof(float), hipMemcpyHostToDevice, stream));
+    NCCL_CHECK(ncclAllReduce(device, device, count, ncclFloat32, ncclSum, comm, stream));
+    HIP_CHECK(hipStreamSynchronize(stream));
+    HIP_CHECK(hipMemcpy(host.data(), device, count * sizeof(float), hipMemcpyDeviceToHost));
+    for (float v : host) if (v != expected) { bad = 1; break; }
+    if (rank == 0 || iteration == iterations - 1)
+      std::printf("rank=%d host=%s local_rank=%d iteration=%d/%d result=%s value=%g\n", rank, hostname, local_rank, iteration + 1, iterations, bad ? "FAIL" : "PASS", host[0]);
+  }
   MPI_CHECK(MPI_Allreduce(MPI_IN_PLACE, &bad, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD));
   NCCL_CHECK(ncclCommDestroy(comm));
   HIP_CHECK(hipFree(device));

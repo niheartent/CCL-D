@@ -38,6 +38,7 @@ def analyze(records, *, now_ns=None, timeout_ms=2000, slow_skew_ms=2):
         ranks = sorted({int(row.get("rank", -1)) for row in rows})
         expected = max((int(row.get("nranks", 1)) for row in rows), default=1)
         nnodes = max((int(row.get("nnodes", 1)) for row in rows), default=1)
+        nnodes = max((int(row.get("nnodes", 1)) for row in rows), default=1)
         expected_ranks = list(range(expected))
         missing = sorted(set(expected_ranks) - set(ranks))
         mismatches = {field: sorted({str(row.get(field)) for row in rows})
@@ -85,6 +86,7 @@ def analyze_completions(records):
             by_rank[rank]["recv_count"] += int(row.get("recv_count", 0))
             by_rank[rank]["channels"] += 1
         expected = max((int(row.get("nranks", 1)) for row in rows), default=1)
+        nnodes = max((int(row.get("nnodes", 1)) for row in rows), default=1)
         ranks = sorted(by_rank)
         missing = sorted(set(range(expected)) - set(ranks))
         send_values = sorted({v["send_count"] for v in by_rank.values()})
@@ -102,7 +104,7 @@ def analyze_completions(records):
         # turn such a difference into a false fault.  Synthetic records that
         # omit algorithm metadata ([-1]) retain the strict mismatch check.
         topology_pending = count_mismatch and (
-            any(a not in (-1, 0) for a in algorithms) or 0 in algorithms)
+            nnodes > 1 or any(a not in (-1, 0) for a in algorithms) or 0 in algorithms)
         status = "MISSING_COMPLETION" if missing else (
             "COUNT_MISMATCH" if count_mismatch and not topology_pending else
             "TOPOLOGY_PENDING" if topology_pending else "OK")
@@ -111,5 +113,6 @@ def analyze_completions(records):
                         "missing_ranks": missing, "send_counts": send_values,
                         "recv_counts": recv_values, "per_rank": dict(by_rank),
                         "algorithms": algorithms, "protocols": protocols,
+                        "nnodes": nnodes,
                         "records": len(rows)})
     return results

@@ -10,6 +10,7 @@
 - 远端 rank 的 op_mismatch 故障注入能够报告 MISMATCH。
 - Python analyzer/monitor 单元测试通过。
 - 标准化 8 rank 验收脚本已通过 UCX 1.16.0 回归，远端 hostname 记录已改为 gethostname()。
+- smoke 支持 `CCLD_ITERS`/`CCLD_COUNT` 多轮回归；20 轮、4096 元素、8 rank 跨节点测试通过。修正多节点未知算法下 device 计数差异的误报，改为 `TOPOLOGY_PENDING`，同时保留 enqueue 参数的严格 mismatch 检测。
 
 ## P0：验收入口和正确性矩阵
 
