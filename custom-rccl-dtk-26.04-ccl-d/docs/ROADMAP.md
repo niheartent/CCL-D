@@ -12,6 +12,7 @@
 - 标准化 8 rank 验收脚本已通过 UCX 1.16.0 回归，远端 hostname 记录已改为 gethostname()。
 - smoke 支持 `CCLD_ITERS`/`CCLD_COUNT` 多轮回归；20 轮、4096 元素、8 rank 跨节点测试通过。修正多节点未知算法下 device 计数差异的误报，改为 `TOPOLOGY_PENDING`，同时保留 enqueue 参数的严格 mismatch 检测。
 - 新增 `tools/tests/run_multinode_fault_matrix.sh`；远端 rank 7 第 10 轮的 `op_mismatch`、`size_mismatch`、`skip_record`、`missing_rank` 矩阵全部通过，分别验证 `MISMATCH` 或 `MISSING_RANK`。
+- 新增 `tools/tests/run_fault_simulation_matrix.sh`；8 rank 的 stall、slow、missing completion 合成日志均由 monitor 检出。它验证 analyzer 路径，不代表真实 GPU hang 或链路故障。
 
 ## P0：验收入口和正确性矩阵
 
