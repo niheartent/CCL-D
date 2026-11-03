@@ -1,6 +1,6 @@
-# AntCCL 复现状态总览
+# CCL-D 复现状态总览
 
-本项目目标是复现所提供 AntCCL 材料中的集合通信 slow/hang 诊断能力。CCL-D 是脱敏实现分支，不能把 CCL-D 论文已有内容等同于 AntCCL 全部功能。
+本项目目标是复现所提供 CCL-D 材料中的集合通信 slow/hang 诊断能力。CCL-D 是脱敏实现分支，不能把 CCL-D 论文已有内容等同于 CCL-D 全部功能。
 
 ## 已完成并实测
 
@@ -16,9 +16,9 @@
 | 远端 rank 故障检测 | 基础完成 | rank 7 第 10 轮可检出 |
 | Python analyzer 单测 | 完成 | 16 项通过 |
 
-## AntCCL 能力对照
+## CCL-D 能力对照
 
-| AntCCL 目标 | 当前状态 | 差距 |
+| CCL-D 目标 | 当前状态 | 差距 |
 |---|---|---|
 | commId、counter、Trace ID | 部分完成 | 已有 comm_id/counter/trace_id，已加入 RCCL op_count，但尚未统一关联并完成回归 |
 | host collective 开始记录 | 基础完成 | 已记录 op、count、bytes、datatype、root、rank、节点、时间 |
@@ -50,7 +50,7 @@
 
 ## 结论
 
-当前是 AntCCL 诊断链路的第一版可运行复现，已具备 Trace/enqueue/completion/monitor 骨架和基础故障检测；还不是完整 AntCCL。AntCCL 最关键的周期 send/recv 速率诊断、Ring/Tree 拓扑分层比较、根因决策树和真实 slow/hang 故障实验尚未完成。
+当前是 CCL-D 诊断链路的第一版可运行复现，已具备 Trace/enqueue/completion/monitor 骨架和基础故障检测；还不是完整 CCL-D。CCL-D 最关键的周期 send/recv 速率诊断、Ring/Tree 拓扑分层比较、根因决策树和真实 slow/hang 故障实验尚未完成。
 
 ## 下一阶段验收顺序
 
