@@ -13,14 +13,12 @@
 #include <mutex>
 #include <sstream>
 #include <string>
-#include <unordered_map>
 
 namespace {
 std::mutex g_lock;
 std::ofstream g_log;
 std::string g_path;
 std::atomic<bool> g_initialized{false};
-std::unordered_map<const ncclComm*, uint64_t> g_counters;
 
 bool enabled() {
   const char* value = std::getenv("RCCL_CCLD_ENABLE");
@@ -101,9 +99,9 @@ void rcclCcldRecordEnqueue(const struct ncclInfo* info) {
   int nranks = comm->nRanks;
   const char* op = safe(info->opName);
   // RCCL's internal opCount advances later in the proxy path.  Keep a
-  // diagnostic counter at enqueue time so every submitted collective gets a
-  // distinct trace even when several operations are queued together.
-  const uint64_t counter = g_counters[comm]++;
+  // Use RCCL's canonical operation counter so enqueue and device completion
+  // resolve to the same trace slot. RCCL advances it in the scheduling path.
+  const uint64_t counter = comm->opCount;
   const char* fault = std::getenv("RCCL_CCLD_FAULT");
   const bool inject = fault && faultSelected(comm, counter);
   if (inject && std::string(fault) == "skip_record") return;
@@ -134,7 +132,7 @@ void rcclCcldRecordEnqueue(const struct ncclInfo* info) {
 void rcclCcldForgetComm(const struct ncclComm* comm) {
   if (!comm) return;
   std::lock_guard<std::mutex> guard(g_lock);
-  g_counters.erase(comm);
+  // No diagnostic-side counter is retained; this avoids host/device drift.
 }
 
 void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,

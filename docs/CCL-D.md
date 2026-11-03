@@ -4,7 +4,7 @@
 
 ## 当前实现
 
-在 `ncclEnqueueCheck()` 完成参数检查后记录每次 collective 的 host enqueue 事件。记录包含 `comm_id`、`counter`、`trace_id`、rank 数、节点编号、操作、元素数、字节数、类型、root 和单调时钟时间。RCCL 的内部 `opCount` 在该插桩点尚未分配，因此这里使用按 communicator 地址维护的独立计数器；Trace ID 格式为 `<16位commHash十六进制>:<counter>`，例如 `f0da14f8a754631c:12`。communicator destroy 被 RCCL 接受后清除对应计数器，防止对象地址复用造成计数延续。
+在 `ncclEnqueueCheck()` 完成参数检查后记录每次 collective 的 host enqueue 事件。记录包含 `comm_id`、`counter`、`trace_id`、rank 数、节点编号、操作、元素数、字节数、类型、root 和单调时钟时间。`counter` 直接使用 RCCL communicator 的 canonical `opCount`，Device completion 也使用同一编号，避免诊断侧独立计数器在长时间运行或并发调度时漂移。Trace ID 格式为 `<16位commHash十六进制>:<counter>`，例如 `f0da14f8a754631c:12`。
 
 记录器默认关闭；开启后每个进程写独立 JSONL 文件。日志路径支持 `{rank}`、`${RANK}` 或 `%r` 占位符，例如 `rank-{rank}.jsonl`。路径没有占位符时，自动在扩展名前加 `.rank<N>`，避免多个 rank 进程同时追加同一个文件。日志只用于诊断，不参与 RCCL 的调度和通信参数。
 

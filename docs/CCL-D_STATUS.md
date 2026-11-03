@@ -20,7 +20,7 @@
 
 | CCL-D 目标 | 当前状态 | 差距 |
 |---|---|---|
-| commId、counter、Trace ID | 部分完成 | 已有 comm_id/counter/trace_id，已加入 RCCL op_count，但尚未统一关联并完成回归 |
+| commId、counter、Trace ID | 基础完成 | Host enqueue 与 Device completion 均使用 RCCL canonical opCount；仍需多 collective group 与长时间双节点回归 |
 | host collective 开始记录 | 基础完成 | 已记录 op、count、bytes、datatype、root、rank、节点、时间 |
 | kernel 开始和结束 | 第一版完成 | ncclCcldDiag 已记录 start/end、state、channel、opCount |
 | 每 channel send/recv 总数 | 第一版完成 | device 累计，host 读取 |
