@@ -426,6 +426,9 @@ struct alignas(16) ncclCcldDiag {
   uint16_t funcIndex;
   uint8_t algorithm;
   uint8_t protocol;
+  int16_t treeUp;
+  int16_t treeDown[3];
+  int16_t treeDepth;
 };
 
 typedef enum {

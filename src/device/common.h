@@ -48,6 +48,7 @@
       __atomic_store_n(&ncclShmem.collTraceTail->diag.sendCount, 0ULL, __ATOMIC_RELAXED); \
       __atomic_store_n(&ncclShmem.collTraceTail->diag.recvCount, 0ULL, __ATOMIC_RELAXED); \
       ccld->channel = (uint16_t)ncclShmem.channelId; \
+      ccld->treeUp = -1; ccld->treeDown[0] = -1; ccld->treeDown[1] = -1; ccld->treeDown[2] = -1; ccld->treeDepth = -1; \
       ccld->state = 0; \
     } \
   } while (0)

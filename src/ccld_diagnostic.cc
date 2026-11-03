@@ -150,6 +150,7 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
         << ",\"trace_id\":\"" << traceId.str()
         << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
         << "\",\"counter\":" << diag->opCount
+        << ",\"op_count\":" << diag->opCount
         << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
         << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
         << ",\"channel\":" << diag->channel
@@ -159,7 +160,16 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
         << ",\"recv_count\":" << diag->recvCount
         << ",\"start_timestamp\":" << diag->startTimestamp
         << ",\"end_timestamp\":" << diag->endTimestamp
-        << ",\"complete\":true}\n";
+        << ",\"complete\":true";
+  if (diag->algorithm == NCCL_ALGO_TREE && diag->channel < MAXCHANNELS) {
+    const ncclTree& tree = comm->channels[diag->channel].tree;
+    g_log << ",\"tree_up\":" << tree.up
+          << ",\"tree_down0\":" << tree.down[0]
+          << ",\"tree_down1\":" << tree.down[1]
+          << ",\"tree_down2\":" << tree.down[2]
+          << ",\"tree_depth\":" << tree.depth;
+  }
+  g_log << "}\n";
   g_log.flush();
 }
 
@@ -180,11 +190,22 @@ void rcclCcldRecordDevice(const struct ncclComm* comm,
         << ",\"trace_id\":\"" << traceId.str()
         << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
         << "\",\"counter\":" << counter
+        << ",\"op_count\":" << counter
         << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
         << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
         << ",\"channel\":" << static_cast<int>(trace->channelId)
         << ",\"send_count\":" << send_count
         << ",\"recv_count\":" << recv_count
+        << ",\"topology_kind\":\""
+        << ((trace->type & ncclCollTraceP2pElemType) ? "p2p" : "collective")
+        << "\""
+        << ((trace->type & ncclCollTraceP2pElemType)
+              ? (std::string(",\"send_rank\":") + std::to_string(trace->p2p.sendRank) +
+                 ",\"recv_rank\":" + std::to_string(trace->p2p.recvRank) +
+                 ",\"channel_base\":" + std::to_string(trace->p2p.channelBase) +
+                 ",\"send_channels\":" + std::to_string(trace->p2p.nSendChannels) +
+                 ",\"recv_channels\":" + std::to_string(trace->p2p.nRecvChannels))
+              : std::string())
         << ",\"complete\":" << (complete ? "true" : "false") << "}\n";
   g_log.flush();
 }

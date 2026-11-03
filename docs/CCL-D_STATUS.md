@@ -26,13 +26,14 @@
 | 每 channel send/recv 总数 | 第一版完成 | device 累计，host 读取 |
 | pinned memory 诊断通道 | 第一版完成 | 还没有完整 LRU trace slot 管理 |
 | 诊断线程生命周期 | 部分完成 | 当前轮询 complete，未实现完整 callback/slot 回收模型 |
-| sendRate/recvRate | 未完成 | 没有周期采样、delta、速率窗口和停滞判断 |
+| kernel 速率离群检查 | 部分完成 | completion start/end 与 send/recv 总数可计算 rank 速率并输出 COMM_SLOW；新增可选连续窗口 COMM_SLOW_WINDOW |
+| sendRate/recvRate 周期采样 | 未完成 | 没有周期采样、delta、窗口化停滞判断 |
 | Ring 横向比较 | 部分完成 | 缺少 peer/edge 时只能降级为 TOPOLOGY_PENDING |
-| Tree 同层比较 | 未完成 | 没有 tree level、parent、children 分组 |
-| peer/edge 拓扑 | 未完成 | 尚未导出到诊断 JSON |
+| Tree 同层比较 | 基础完成 | RCCL completion 已输出 tree_up/tree_down/tree_depth，分析器按 depth 比较同层边；仍需真实多节点 Tree 回归 |
+| peer/edge 拓扑字段 | 部分完成 | completion 已输出并聚合 peer/channel 边字段，包含边级收发量和速率；Ring 对称性已实现，Tree 依赖 level 字段 |
 | 算法和协议一致性 | 部分完成 | completion 有字段，路径覆盖和校验不足 |
 | 计算慢识别 | 未完成 | 没有计算阶段与 collective 开始边界分析 |
-| kernel/通信推进慢识别 | 未完成 | 没有 sendRate/recvRate |
+| kernel/通信推进慢识别 | 部分完成 | 单轮 COMM_SLOW 与连续窗口 COMM_SLOW_WINDOW 已实现；真实 GPU/网络慢和拓扑分层仍未完成 |
 | 未进入 collective 检测 | 基础完成 | enqueue 缺失可报 MISSING_RANK |
 | 参数不一致检测 | 完成 | op/count/bytes/datatype/root |
 | kernel 未完成检测 | 基础完成 | completion 缺失可报 MISSING_COMPLETION |
@@ -46,11 +47,11 @@
 
 真实 RCCL/CCL-D 记录矩阵已验证：op_mismatch 和 size_mismatch 报 MISMATCH，skip_record 和 missing_rank 报 MISSING_RANK。
 
-容器内合成 completion 矩阵已验证：stall 和 slow 可触发计数异常，missing completion 报 MISSING_COMPLETION。它们验证插桩、日志聚合和 monitor 决策，不能等价于真实 GPU kernel hang、驱动错误或 IB 链路中断。
+容器内合成 completion 矩阵已验证：stall 报 MISSING_COMPLETION，slow 报 COMM_SLOW 并定位 slow rank，missing completion 报 MISSING_COMPLETION。它们验证插桩、日志聚合和 monitor 决策，不能等价于真实 GPU kernel hang、驱动错误或 IB 链路中断。
 
 ## 结论
 
-当前是 CCL-D 诊断链路的第一版可运行复现，已具备 Trace/enqueue/completion/monitor 骨架和基础故障检测；还不是完整 CCL-D。CCL-D 最关键的周期 send/recv 速率诊断、Ring/Tree 拓扑分层比较、根因决策树和真实 slow/hang 故障实验尚未完成。
+当前是 CCL-D 诊断链路的第一版可运行复现，已具备 Trace/enqueue/completion/monitor 骨架和基础故障检测；还不是完整 CCL-D。CCL-D 已增加基于 completion start/end 和 send/recv 总数的第一版 COMM_SLOW 速率离群检查；周期 send/recv 采样、Ring/Tree 拓扑分层比较、根因决策树和真实 slow/hang 故障实验仍未完成。
 
 ## 下一阶段验收顺序
 

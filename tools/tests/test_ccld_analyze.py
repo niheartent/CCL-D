@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ccld_analyze import analyze, analyze_completions, load_records
+from ccld_analyze import (analyze, analyze_completions,
+                          analyze_completion_windows, load_records)
 
 
 def record(rank, *, op="AllReduce", byte_count=4096, ts=1_000_000_000,
@@ -91,10 +92,11 @@ class CcldAnalyzeTest(unittest.TestCase):
         for rank in (0, 1):
             rows.extend({"phase": "complete", "comm_id": "abcd", "counter": 3,
                          "rank": rank, "nranks": 2, "channel": channel,
-                         "send_count": 4, "recv_count": 4} for channel in (0, 1))
+                         "send_count": 4, "recv_count": 4, "op_count": 3} for channel in (0, 1))
         result = analyze_completions(rows)[0]
         self.assertEqual(result["status"], "OK")
         self.assertEqual(result["per_rank"][0]["send_count"], 8)
+        self.assertEqual(result["op_counts"], ["3"])
 
     def test_completion_count_mismatch_is_detected(self):
         rows = [{"phase": "complete", "comm_id": "abcd", "counter": 3,
@@ -102,6 +104,94 @@ class CcldAnalyzeTest(unittest.TestCase):
                 {"phase": "complete", "comm_id": "abcd", "counter": 3,
                  "rank": 1, "nranks": 2, "send_count": 4, "recv_count": 8}]
         self.assertEqual(analyze_completions(rows)[0]["status"], "COUNT_MISMATCH")
+
+    def test_incomplete_completion_is_detected(self):
+        rows = [{"phase": "complete", "comm_id": "abcd", "counter": 3,
+                 "rank": 0, "nranks": 2, "send_count": 8, "recv_count": 8,
+                 "complete": True},
+                {"phase": "complete", "comm_id": "abcd", "counter": 3,
+                 "rank": 1, "nranks": 2, "send_count": 8, "recv_count": 8,
+                 "complete": False}]
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["status"], "MISSING_COMPLETION")
+        self.assertEqual(result["incomplete_ranks"], [1])
+
+    def test_completion_rate_outlier_is_detected(self):
+        rows = []
+        for rank, duration in ((0, 100), (1, 100), (2, 400), (3, 100)):
+            rows.append({"phase": "complete", "comm_id": "abcd", "counter": 8,
+                         "rank": rank, "nranks": 4, "send_count": 1000,
+                         "recv_count": 1000, "start_timestamp": 0,
+                         "end_timestamp": duration, "complete": True})
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["status"], "COMM_SLOW")
+        self.assertEqual(result["slow_ranks"], [2])
+        self.assertAlmostEqual(result["per_rank"][2]["send_rate"], 2.5)
+
+    def test_completion_keeps_peer_topology_edges(self):
+        rows = [{"phase": "complete", "comm_id": "abcd", "counter": 9,
+                 "rank": 0, "nranks": 2, "send_count": 8, "recv_count": 8,
+                 "send_rank": 1, "recv_rank": 1, "channel_base": 0},
+                {"phase": "complete", "comm_id": "abcd", "counter": 9,
+                 "rank": 1, "nranks": 2, "send_count": 8, "recv_count": 8,
+                 "send_rank": 0, "recv_rank": 0, "channel_base": 0}]
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["topology_edges"], [(0, 1, 1, 0), (1, 0, 0, 0)])
+
+    def test_completion_aggregates_topology_groups_with_rates(self):
+        rows = [{"phase": "complete", "comm_id": "abcd", "counter": 10,
+                 "rank": 0, "nranks": 2, "send_count": 8, "recv_count": 6,
+                 "send_rank": 1, "recv_rank": 1, "channel_base": 2,
+                 "start_timestamp": 0, "end_timestamp": 4},
+                {"phase": "complete", "comm_id": "abcd", "counter": 10,
+                 "rank": 1, "nranks": 2, "send_count": 6, "recv_count": 8,
+                 "send_rank": 0, "recv_rank": 0, "channel_base": 2,
+                 "start_timestamp": 0, "end_timestamp": 4}]
+        result = analyze_completions(rows)[0]
+        self.assertTrue(result["topology_ready"])
+        self.assertEqual(result["topology_groups"][0]["send_count"], 8)
+        self.assertEqual(result["topology_groups"][1]["send_rate"], 1.5)
+
+    def test_ring_topology_is_symmetric(self):
+        rows = []
+        for rank, peer in ((0, 1), (1, 0)):
+            rows.append({"phase": "complete", "comm_id": "abcd", "counter": 11,
+                         "rank": rank, "nranks": 2, "algorithm": 0,
+                         "send_count": 8, "recv_count": 8, "send_rank": peer,
+                         "recv_rank": peer, "channel_base": 0,
+                         "start_timestamp": 0, "end_timestamp": 4})
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["topology_analysis"]["status"], "RING_SYMMETRIC")
+
+    def test_ring_topology_detects_asymmetric_edge_rate(self):
+        rows = []
+        for rank, peer, count in ((0, 1, 8), (1, 0, 2)):
+            rows.append({"phase": "complete", "comm_id": "abcd", "counter": 12,
+                         "rank": rank, "nranks": 2, "algorithm": 0,
+                         "send_count": count, "recv_count": count,
+                         "send_rank": peer, "recv_rank": peer, "channel_base": 0,
+                         "start_timestamp": 0, "end_timestamp": 4})
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["topology_analysis"]["status"], "RING_ASYMMETRY")
+
+    def test_tree_topology_requires_explicit_levels(self):
+        rows = [{"phase": "complete", "comm_id": "abcd", "counter": 13,
+                 "rank": 0, "nranks": 2, "algorithm": 1, "send_count": 8,
+                 "recv_count": 8, "send_rank": 1, "recv_rank": 1,
+                 "channel_base": 0}]
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["topology_analysis"]["status"], "TREE_LEVEL_PENDING")
+
+    def test_tree_topology_compares_rates_by_level(self):
+        rows = []
+        for rank, peer, count in ((0, 1, 8), (1, 0, 2)):
+            rows.append({"phase": "complete", "comm_id": "abcd", "counter": 14,
+                         "rank": rank, "nranks": 2, "algorithm": 1,
+                         "send_count": count, "recv_count": count,
+                         "send_rank": peer, "recv_rank": peer, "channel_base": 0,
+                         "tree_level": 0, "start_timestamp": 0, "end_timestamp": 4})
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["topology_analysis"]["status"], "TREE_ASYMMETRY")
 
     def test_tree_count_difference_waits_for_topology(self):
         rows = [{"phase": "complete", "comm_id": "abcd", "counter": 3,
@@ -129,6 +219,32 @@ class CcldAnalyzeTest(unittest.TestCase):
                  "rank": 1, "nranks": 2, "nnodes": 2,
                  "send_count": 4, "recv_count": 4}]
         self.assertEqual(analyze_completions(rows)[0]["status"], "TOPOLOGY_PENDING")
+
+    def test_completion_window_requires_persistent_slow_rank(self):
+        rows = []
+        for counter in (1, 2, 3):
+            for rank, duration in ((0, 100), (1, 100), (2, 400)):
+                rows.append({"phase": "complete", "comm_id": "abcd",
+                             "counter": counter, "rank": rank, "nranks": 3,
+                             "send_count": 1000, "recv_count": 1000,
+                             "start_timestamp": 0, "end_timestamp": duration,
+                             "complete": True})
+        result = analyze_completion_windows(rows, window_size=3)[0]
+        self.assertEqual(result["status"], "COMM_SLOW_WINDOW")
+        self.assertEqual(result["slow_ranks"], [2])
+        self.assertEqual(result["observed_windows"], 1)
+
+    def test_completion_window_does_not_alert_one_noisy_iteration(self):
+        rows = []
+        for counter in (1, 2, 3):
+            for rank in (0, 1, 2):
+                duration = 400 if counter == 2 and rank == 2 else 100
+                rows.append({"phase": "complete", "comm_id": "abcd",
+                             "counter": counter, "rank": rank, "nranks": 3,
+                             "send_count": 1000, "recv_count": 1000,
+                             "start_timestamp": 0, "end_timestamp": duration,
+                             "complete": True})
+        self.assertEqual(analyze_completion_windows(rows, window_size=3), [])
 
 
 if __name__ == "__main__":
