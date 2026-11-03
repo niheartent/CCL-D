@@ -122,6 +122,7 @@ void rcclCcldRecordEnqueue(const struct ncclInfo* info) {
         << ",\"trace_id\":\"" << trace.str()
         << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
         << "\",\"counter\":" << counter
+        << ",\"op_count\":" << comm->opCount
         << ",\"rank\":" << comm->rank << ",\"nranks\":" << nranks
         << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
         << ",\"op\":\"" << op << "\",\"count\":" << count

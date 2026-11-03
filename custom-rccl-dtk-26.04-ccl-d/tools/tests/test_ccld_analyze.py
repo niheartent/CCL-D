@@ -23,6 +23,13 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual(result["status"], "OK")
         self.assertEqual(result["trace_id"], "abcd:7")
 
+    def test_records_can_carry_stable_op_count(self):
+        rows = [record(0), record(1)]
+        rows[0]["op_count"] = rows[1]["op_count"] = 42
+        result = analyze(rows, now_ns=1_000_000_001)[0]
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual({row["op_count"] for row in rows}, {42})
+
     def test_detects_operation_mismatch(self):
         result = analyze([record(0), record(1, op="Broadcast")])[0]
         self.assertEqual(result["status"], "MISMATCH")
