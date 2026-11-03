@@ -1,9 +1,14 @@
-paper/
-ccld-artifacts/
-rccl-artifacts/
-backups/
-custom-rccl-dtk-26.04-ccl-d/build/
-custom-rccl-dtk-26.04-ccl-d/install/
+# Build and local validation artifacts
+build/
+install/
+ext/
+coverage/
+/ccld-artifacts/
+/rccl-artifacts/
+/backups/
+/custom-rccl-dtk-26.04-original-backup/
+/ucx-build-*/
+/ucx-*.tar.gz
+/ucx-*.log
 __pycache__/
 *.pyc
-
