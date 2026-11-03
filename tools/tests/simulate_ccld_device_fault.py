@@ -25,12 +25,15 @@ def main():
             total = 1024 if args.fault != "slow" or rank != 2 else 256
             if args.fault == "stall" and rank == 2:
                 total = 0
+            duration = 1000 if args.fault != "slow" or rank != 2 else 4000
             for channel in range(args.channels):
                 row = {"schema": 1, "phase": "complete", "comm_id": "simulated",
                        "counter": 0, "trace_id": "simulated:0", "rank": rank,
                        "nranks": args.ranks, "node": 0, "nnodes": 1,
                        "channel": channel, "send_count": total,
-                       "recv_count": total, "complete": args.fault != "stall" or rank != 2}
+                       "recv_count": total, "start_timestamp": 0,
+                       "end_timestamp": duration,
+                       "complete": args.fault != "stall" or rank != 2}
                 stream.write(json.dumps(row, sort_keys=True) + "\n")
 
 
