@@ -2,17 +2,7 @@
 
 CCL-D 是基于 RCCL 的集合通信诊断实现，目标是把训练中的 `hang` / `slow` 从一个模糊的任务现象，转换成可以按通信域、轮次和 rank 追踪的证据。
 
-当前版本已经打通：
-
-- RCCL `gfx936` 独立编译和安装
-- Host enqueue 记录与 Trace ID
-- 双节点 8 rank RCCL AllReduce
-- 操作、规模、字节数、datatype、root 一致性检查
-- 缺失 rank、kernel completion 缺失、收发计数异常检查
-- JSONL 记录、跨 rank 聚合和 monitor 退出码
-- 可控的操作不一致、规模不一致、记录缺失和合成 kernel 异常注入
-
-当前版本是**可运行的第一版诊断闭环**。Hang 已具备基础检查；Slow 已增加基于 kernel start/end 与 send/recv 总数的 rank 速率离群检查，但完整 Slow 诊断仍需要周期窗口采样、Ring/Tree 拓扑比较、真实 GPU/网络故障实验和性能开销评测。
+系统完成度、实验边界和后续工作记录在 [docs/CCL-D_STATUS.md](docs/CCL-D_STATUS.md)；原理与详细设计说明见 [docs/CCL-D.md](docs/CCL-D.md)。
 
 ## 1. 工作原理
 
@@ -252,35 +242,5 @@ RCCL runtime smoke：
 tools/tests/run_ccld_runtime_smoke.sh \
   /workspace/CCL-D/rccl-artifacts/dtk-26.04-gfx936/build/test/rccl-UnitTests
 ```
-
-## 9. 当前完成度
-
-| 能力 | 状态 |
-|---|---|
-| gfx936 RCCL 构建、独立安装 | 已完成 |
-| 双节点 8 rank 正常通信 | 已完成 |
-| Host enqueue、comm_id、counter、Trace ID | 已完成基础链路 |
-| 操作/规模/字节数等参数一致性检查 | 已完成 |
-| 缺失 rank 检查 | 已完成 |
-| kernel completion 检查 | 基础完成 |
-| send/recv 总数检查 | 基础完成 |
-| kernel 速率离群检查 | 第一版完成 | 基于 start/end 和 send/recv 总数；周期窗口采样仍待实现 |
-| sendRate/recvRate 周期采样 | 未完成 |
-| completion peer/channel 拓扑字段 | 第一版完成 | 记录可用的 send/recv peer、channel base 和 channel 数 |
-| Ring / Tree 拓扑感知比较 | 未完成 |
-| 计算慢与通信慢区分 | 未完成 |
-| 真实 GPU hang/slow 故障 | 未完成 |
-| 真实 IB/网络故障 | 未完成 |
-| 多 communicator、stream、graph、CollNet、NVLS、MSCCL 完整矩阵 | 未完成验证 |
-| 训练 workload 性能开销 | 未完成 |
-
-## 10. 下一步实现顺序
-
-1. 把 enqueue、kernel start/end、completion 统一到稳定的 per-collective trace slot。
-2. 增加诊断线程周期采样，输出窗口化 `sendRate` / `recvRate` 和停滞状态。
-3. 导出 peer/edge 和 Ring/Tree 层级信息，按合法拓扑比较收发状态。
-4. 增加计算慢、kernel 推进慢、真实网络错误和进程退出的可控实验。
-5. 补齐多 communicator、stream、graph、CollNet、NVLS、MSCCL 路径。
-6. 使用训练 workload 测量端到端时间、吞吐、CPU、pinned memory 和 GPU 影响，并报告 P50/P95/P99。
 
 当前所有构建、测试和实验产物都保存在 `/workspace/CCL-D/ccld-artifacts/`，源码修改不会覆盖独立安装结果。
