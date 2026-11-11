@@ -35,6 +35,7 @@
 | 项目 | 当前实现 | 设计要求 | 影响 |
 |---|---|---|---|
 | 事件身份 | `opCount % CCLD_DIAG_SLOTS` | 独立 TraceID + LRU `kernelIndex` | 物理槽位和逻辑事件混淆 |
+| host counter 分配 | enqueue 前直接读取 `comm->opCount` | planner 中为用户操作确定唯一 counter | 当前 enqueue 日志可能早于 proxy/plan 的 counter 推进，分组 task 归属未解决 |
 | 分配粒度 | 在 batch/kernel 侧选槽 | host 操作级分配 body | 多 work batch 归属不稳定 |
 | 生命周期 | state 0/1/2，诊断线程轮询清理 | kernel 结束 callback + 诊断线程回收 | host 消费慢时可能丢记录 |
 | 多 work batch | 入口读取一个 work 的字段 | 一个用户操作统一 TraceID，body 按 channel 累加 | P2P/AllToAll 容易出现错误关联 |

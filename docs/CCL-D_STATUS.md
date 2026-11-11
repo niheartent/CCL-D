@@ -38,6 +38,8 @@
 
 上一轮五算子数据面回归中观察到诊断记录丢失。随后加入了 `dropped_batches` 记录，但这只能把观测丢失显式化，不能证明生命周期正确。问题根因尚未完成材料级修复：当前实现仍把物理 slot 和操作身份混用，且没有完成 `kernelIndex` LRU、callback 回收和多 work 归属。
 
+源码审计还确认：`rcclCcldRecordEnqueue()` 目前在 `ncclEnqueueCheck()` 的 `taskAppend()` 之前执行，而 `comm->opCount` 的推进发生在 proxy 提交路径。因而不能直接把当前 enqueue 日志中的 `comm->opCount` 当作已经稳定分配的材料级操作 counter；分组调用和 plan 内多个 task 的归属必须先在 host planner 侧明确。
+
 因此，当前不能把 `dropped_batches=0`、扩大 slot 数量或一次回归 PASS 当作完整诊断实现的证明。
 
 ## 当前完成度口径
@@ -51,9 +53,9 @@
 
 ## 下一步必须先完成的验证
 
-1. 只读核对材料与 RCCL 源码，画出 host enqueue、plan、work batch、kernel、callback、diagnostic thread 的实际生命周期。
+1. 按 `ncclEnqueueCheck → taskAppend → plan → uploadProxyOps → kernel → callback` 画出实际生命周期，并确定操作 counter 的唯一分配点。
 2. 在不编译的情况下，用合成记录验证 `TraceID`、`kernelIndex`、body/channel、回收状态机。
-3. 明确 AllToAll/P2P parent operation 和多 work batch 归属字段。
-4. 明确 Simple/LL/LL128 的真实计数插入点。
-5. 通过状态机单测后，才重新修改并编译 RCCL。
-6. 新库安装后重新跑干净目录的五算子回归，再测 100/1000 轮和长稳。
+3. 明确 AllToAll/P2P parent operation 和多 work batch 归属字段，同时确认 FIFO/graph/persistent work 结构预算。
+4. 明确 Simple/LL/LL128 的真实计数插入点和 mode 语义。
+5. 通过状态机单测后，统一修改 host work 元数据、device body 和结束通知，再编译 RCCL。
+6. 新库安装后重新跑干净目录的五算子回归，再测 100/1000 轮、多 communicator/stream 和长稳。
