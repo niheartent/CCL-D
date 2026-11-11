@@ -171,9 +171,9 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                 asymmetric = []
                 for channel, channel_rows in by_channel.items():
                     by_rank_row = {int(r["rank"]): r for r in channel_rows}
-                    ranks = set(by_rank_row)
+                    ring_ranks = set(by_rank_row)
                     bad = (len(by_rank_row) != len(channel_rows) or
-                           any(int(r["ring_prev"]) not in ranks or int(r["ring_next"]) not in ranks
+                           any(int(r["ring_prev"]) not in ring_ranks or int(r["ring_next"]) not in ring_ranks
                                for r in channel_rows))
                     if not bad:
                         bad = any(int(by_rank_row[int(r["ring_next"])]["ring_prev"]) != int(r["rank"])

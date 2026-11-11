@@ -17,6 +17,8 @@ if [[ -z ${HIP_PATH:-} && -r /opt/dtk-26.04/env.sh ]]; then
 fi
 export LD_LIBRARY_PATH="$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export RCCL_CCLD_ENABLE=1
+# Avoid single-rank gtest subcases: RCCL opCount is reused at nranks=1.
+export UT_MIN_GPUS=2
 export RCCL_CCLD_LOG="$workdir/rank-{rank}.jsonl"
 unset RCCL_CCLD_FAULT RCCL_CCLD_FAULT_RANK RCCL_CCLD_FAULT_COUNTER
 

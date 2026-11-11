@@ -162,6 +162,7 @@ class CcldAnalyzeTest(unittest.TestCase):
                          "start_timestamp": 0, "end_timestamp": 4})
         result = analyze_completions(rows)[0]
         self.assertEqual(result["topology_analysis"]["status"], "RING_SYMMETRIC")
+        json.dumps(result)
 
     def test_ring_topology_detects_asymmetric_edge_rate(self):
         rows = []
