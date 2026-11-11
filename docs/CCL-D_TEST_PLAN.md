@@ -55,6 +55,8 @@
 
 peer 采集使用每 channel 的有限槽位；记录中必须包含 peer 槽溢出状态。出现溢出时结果标为 `PEER_DATA_TRUNCATED`，该轮不能作为拓扑和流量完整性通过样本，不能将缺失的 peer 计数当作 0。
 
+诊断槽按 `channel × opCount % CCLD_DIAG_SLOTS` 选择，同一 CTA 内每个 work batch 独立开始和提交。slot 尚未被 host collector 消费时，新 batch 不覆盖旧记录，而是增加 `dropped_batches`；monitor 将其报告为 `DIAGNOSTIC_BATCH_DROPPED`。slot 数量和丢弃计数必须在压力测试中一起验收。
+
 ## 4. RCCL 多算子和长期覆盖
 
 在合成故障通过后，执行 AllReduce、AllGather、ReduceScatter、Broadcast、AllToAll、Ring、Tree、多 communicator、多 stream 和 20～1000 轮压力测试。检查每条路径的 enqueue、sample、completion、算法、协议、channel、拓扑字段，以及计数器回退、slot 泄漏、日志截断和 monitor 超时治理。

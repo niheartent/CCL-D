@@ -42,9 +42,11 @@
   asm volatile ("s_getreg_b32 %0, hwreg(HW_REG_HW_ID)" : "=s" (collTrace->data_0));
 #endif
 #ifdef ENABLE_COLLTRACE
+#define CCLD_DIAG_SLOT_INDEX ((ncclShmem.channelId * CCLD_DIAG_SLOTS) + ncclShmem.ccldDiagSlot)
+#define CCLD_DIAG_SLOT_PTR (ncclShmem.comm.ccldDiag + CCLD_DIAG_SLOT_INDEX)
   #define CCLD_DIAG_RESET() do { \
-    if (threadIdx.x == 0) { \
-      struct ncclCcldDiag* ccld = ncclShmem.comm.ccldDiag + ncclShmem.channelId; \
+    if (threadIdx.x == 0 && ncclShmem.ccldDiagActive) { \
+      struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR; \
       __atomic_store_n(&ncclShmem.collTraceTail->diag.sendCount, 0ULL, __ATOMIC_RELAXED); \
       __atomic_store_n(&ncclShmem.collTraceTail->diag.recvCount, 0ULL, __ATOMIC_RELAXED); \
       for (int proto = 0; proto < 3; ++proto) { \
@@ -68,8 +70,8 @@
     } \
   } while (0)
   #define CCLD_DIAG_SET_PEERS(SENDPEERS, NSEND, RECVPEERS, NRECV) do { \
-    if (tid == 0 && ncclShmem.comm.ccldDiag != nullptr) { \
-      struct ncclCcldDiag* ccld = ncclShmem.comm.ccldDiag + ncclShmem.channelId; \
+    if (tid == 0 && ncclShmem.ccldDiagActive) { \
+      struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR; \
       ccld->activeSendPeerCount = 0; ccld->activeRecvPeerCount = 0; \
       for (int peer = 0; peer < (NSEND); ++peer) { \
         int slot = -1; for (int j = 0; j < ccld->sendPeerCount; ++j) if (ccld->sendPeerIds[j] == (SENDPEERS)[peer]) slot = j; \
@@ -88,11 +90,11 @@
     } \
   } while (0)
   #define CCLD_DIAG_ADD(SEND, RECV) do { \
-    if (tid == 0) { \
+    if (tid == 0 && ncclShmem.ccldDiagActive) { \
       if ((SEND) != 0) __atomic_fetch_add(&ncclShmem.collTraceTail->diag.sendCount, (uint64_t)(SEND), __ATOMIC_RELAXED); \
       if ((RECV) != 0) __atomic_fetch_add(&ncclShmem.collTraceTail->diag.recvCount, (uint64_t)(RECV), __ATOMIC_RELAXED); \
-      if (ncclShmem.comm.ccldDiag != nullptr) { \
-        struct ncclCcldDiag* ccld = ncclShmem.comm.ccldDiag + ncclShmem.channelId; \
+      if (ncclShmem.ccldDiagActive) { \
+        struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR; \
         if ((SEND) != 0) __atomic_fetch_add(&ccld->sendCount, (uint64_t)(SEND), __ATOMIC_RELAXED); \
         if ((RECV) != 0) __atomic_fetch_add(&ccld->recvCount, (uint64_t)(RECV), __ATOMIC_RELAXED); \
         const int proto = (ccld->protocol < 3) ? ccld->protocol : -1; \
@@ -214,6 +216,8 @@ struct ncclShmemData {
   struct ncclDevKernelArgs args;
   int channelId;
   int aborted;
+  int ccldDiagSlot;
+  int ccldDiagActive;
   alignas(16) struct ncclDevComm comm;
   alignas(16) struct ncclDevChannel channel;
 
@@ -601,16 +605,6 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
   }
 #endif
   if (tid == 0) __insert_timestamp(__LINE__);
-  CCLD_DIAG_RESET();
-  __syncthreads();
-  if (tid == 0 && ncclShmem.comm.ccldDiag != nullptr) {
-    struct ncclCcldDiag* ccld = ncclShmem.comm.ccldDiag + ncclShmem.channelId;
-    struct ncclDevWorkColl* first = (struct ncclDevWorkColl*)ncclShmem.workStorage;
-    ccld->opCount = first->opCount; ccld->funcIndex = ncclShmem.funcId;
-    ccld->algorithm = first->algorithm; ccld->protocol = first->protocol;
-    ccld->sendCount = 0; ccld->recvCount = 0; ccld->startTimestamp = wall_clock64();
-    __atomic_store_n(&ccld->state, 1u, __ATOMIC_RELEASE);
-  }
   if (COLLTRACE && tid%WARP_SIZE == 0) traceKernelLaunch(ncclCollTraceKernelLaunchType);
 
   if (tid == 0 && args->workStorageType == ncclDevWorkStorageTypeFifo) {
@@ -619,6 +613,25 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
   }
 
   while (true) {
+    if (tid == 0) __insert_timestamp(__LINE__);
+    if (tid == 0 && ncclShmem.comm.ccldDiag != nullptr) {
+      struct ncclDevWorkColl* current = (struct ncclDevWorkColl*)ncclShmem.workStorage;
+      ncclShmem.ccldDiagSlot = current->opCount % CCLD_DIAG_SLOTS;
+      struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR;
+      ncclShmem.ccldDiagActive = (__atomic_load_n(&ccld->state, __ATOMIC_ACQUIRE) == 0);
+      if (ncclShmem.ccldDiagActive) {
+        CCLD_DIAG_RESET();
+        ccld->opCount = current->opCount; ccld->funcIndex = ncclShmem.funcId;
+        ccld->algorithm = current->algorithm; ccld->protocol = current->protocol;
+        ccld->sendCount = 0; ccld->recvCount = 0; ccld->startTimestamp = wall_clock64();
+        __atomic_store_n(&ccld->state, 1u, __ATOMIC_RELEASE);
+      } else {
+        __atomic_fetch_add(&ccld->droppedBatches, 1ULL, __ATOMIC_RELAXED);
+      }
+    } else if (tid == 0) {
+      ncclShmem.ccldDiagActive = 0;
+    }
+    __syncthreads();
     if (tid == 0) __insert_timestamp(__LINE__);
     
     if (0 <= SpecializedFnId && ncclShmem.funcId == (unsigned)SpecializedFnId) {
@@ -637,6 +650,11 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
 #endif
     }
 
+    if (tid == 0 && ncclShmem.ccldDiagActive) {
+      struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR;
+      ccld->endTimestamp = wall_clock64(); __atomic_store_n(&ccld->state, 2u, __ATOMIC_RELEASE);
+    }
+    __syncthreads();
     if (ncclShmem.nextBatchIx == -1) break;
     int batchIx = ncclShmem.nextBatchIx;
     __syncthreads();
@@ -664,10 +682,6 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
     if (COLLTRACE && tid%WARP_SIZE == 0) traceKernelLaunch(ncclCollTraceCollLaunchType);
   }
   if (COLLTRACE && tid%WARP_SIZE == 0) traceKernelEnd(ncclCollTraceKernelEndType);
-  if (tid == 0 && ncclShmem.comm.ccldDiag != nullptr) {
-    struct ncclCcldDiag* ccld = ncclShmem.comm.ccldDiag + ncclShmem.channelId;
-    ccld->endTimestamp = wall_clock64(); __atomic_store_n(&ccld->state, 2u, __ATOMIC_RELEASE);
-  }
 
 #ifdef ENABLE_PROFILING
   if (ncclShmem.comm.devProf->seq < PROFILE_NUM_LAUNCHES) {

@@ -54,7 +54,7 @@ def main():
             anomaly = status in ("MISMATCH", "MISSING_RANK", "ENQUEUE_SKEW",
                                  "COUNT_MISMATCH", "MISSING_COMPLETION", "COMM_SLOW",
                                  "COMM_SLOW_WINDOW", "COMM_STALLED", "PEER_DATA_TRUNCATED",
-                                 "PEER_DATA_INCONSISTENT")
+                                 "PEER_DATA_INCONSISTENT", "DIAGNOSTIC_BATCH_DROPPED")
             if args.strict_topology and status in ("RING_ASYMMETRY", "TREE_ASYMMETRY"):
                 anomaly = True
             if anomaly:

@@ -308,6 +308,7 @@ struct alignas(16) ncclDevWorkColl {
   };
   uint64_t redOpArg;
   uint64_t opCount;
+  uint64_t droppedBatches;
   uint8_t algorithm;
   uint8_t protocol;
   uint16_t reserved;
@@ -415,6 +416,7 @@ static_assert(sizeof(struct ncclProf) == 256, "ncclProf must have size of 256");
 #endif
 
 #ifdef ENABLE_COLLTRACE
+#define CCLD_DIAG_SLOTS 16
 struct alignas(16) ncclCcldDiag {
 #define CCLD_MAX_PEER_SLOTS NCCL_MAX_ARITY
   uint64_t opCount;

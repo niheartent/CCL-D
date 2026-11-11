@@ -34,8 +34,8 @@
 | sendRate/recvRate 周期采样 | 第一版完成 | 诊断线程按 `RCCL_CCLD_SAMPLE_MS` 读取 pinned 计数并输出 `phase=sample`，同时记录 `send_delta/recv_delta`、窗口时长、B/s 速率和 counter 回退标记；分析器可按同节点对照 rank 检出 `COMM_STALLED`，仍需按 protocol 精确计数和长期资源回收 |
 | Ring 横向比较 | 基础完成 | completion 输出 `ring_prev/ring_next`，分析器按 channel 校验环的互为前后继关系和速率；缺字段时明确输出 `RING_TOPOLOGY_PENDING` |
 | Tree 同层比较 | 基础完成 | completion 输出 `tree_up/tree_down0..2/tree_depth`，分析器按真实 channel/depth 比较同层推进速率；仍需真实多节点 Tree 回归 |
-| peer/edge 拓扑字段 | 第一版完成 | 新版 RCCL 已输出 peer/channel 流量和 overflow；20 轮 8 rank 已验证字段可见，但部分多 batch channel 出现 peer 明细不一致 |
-| 算法和协议一致性 | 第一版完成 | completion 输出算法、协议及 Simple/LL/LL128 分协议 send/recv 计数；协议总计数正确，协议×peer 明细需 slot 生命周期改造后才能作为完整证据 |
+| peer/edge 拓扑字段 | 第一版完成 | 每 channel 16 个 batch slot，completion 按 batch 独立输出；20 轮 8 rank 复测无 peer/protocol 不一致、无 slot 丢弃、无 peer overflow |
+| 算法和协议一致性 | 第一版完成 | completion 输出算法、协议及 Simple/LL/LL128 分协议 send/recv 计数；per-batch slot 后协议×peer 总量与协议总计数一致，待更多算法路径覆盖 |
 | 计算慢识别 | 未完成 | 没有计算阶段与 collective 开始边界分析 |
 | kernel/通信推进慢识别 | 部分完成 | 单轮 COMM_SLOW 与连续窗口 COMM_SLOW_WINDOW 已实现；真实 GPU/网络慢和拓扑分层仍未完成 |
 | 未进入 collective 检测 | 基础完成 | enqueue 缺失可报 MISSING_RANK |

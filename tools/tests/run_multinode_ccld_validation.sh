@@ -10,6 +10,7 @@ NP=${CCLD_NP:-8}
 ITERS=${CCLD_ITERS:-1}
 COUNT=${CCLD_COUNT:-1024}
 FAULT=${CCLD_FAULT:-}
+SLOW_RATE_RATIO=${CCLD_SLOW_RATE_RATIO:-0}
 mkdir -p "$OUT"
 test -x "$EXE"
 export LD_LIBRARY_PATH="$RCCL_PREFIX/lib:$UCX_PREFIX/lib:/opt/hyhal/lib:/opt/dtk/lib:/opt/dtk/hip/lib:/opt/mpi/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -25,7 +26,7 @@ echo "iterations=$ITERS count=$COUNT fault=${FAULT:-none}"
 export CCLD_ITERS="$ITERS" CCLD_COUNT="$COUNT"
 OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 mpirun --mca plm_rsh_args "-p 2234" --host "$HOSTS" --map-by ppr:4:node --bind-to none -np "$NP" -x LD_LIBRARY_PATH -x RCCL_CCLD_ENABLE -x RCCL_CCLD_LOG -x CCLD_ITERS -x CCLD_COUNT -x RCCL_CCLD_FAULT -x RCCL_CCLD_FAULT_RANK -x RCCL_CCLD_FAULT_COUNTER "$EXE" 2>&1 | tee "$OUT/run.log"
 set +e
-python3 "$ROOT/tools/ccld_monitor.py" --once --timeout-ms 0 --fail-on-anomaly "$OUT"/rank-*.jsonl | tee "$OUT/monitor.jsonl"
+python3 "$ROOT/tools/ccld_monitor.py" --once --timeout-ms 0 --fail-on-anomaly --slow-rate-ratio "$SLOW_RATE_RATIO" "$OUT"/rank-*.jsonl | tee "$OUT/monitor.jsonl"
 status=${PIPESTATUS[0]}
 set -e
 echo "monitor_exit=$status"

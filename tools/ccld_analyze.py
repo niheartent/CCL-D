@@ -159,6 +159,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                                        "send_peers": {}, "recv_peers": {},
                                        "send_protocol_peers": {}, "recv_protocol_peers": {},
                                        "peer_overflow": False,
+                                       "dropped_batches": 0,
                                        "peer_data_inconsistent": [],
                                        "channels": 0, "complete": True,
                                        "start_timestamp": None,
@@ -192,6 +193,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                             peer_key = str(int(peers[peer_index]["peer"]))
                             proto_map[peer_key] = proto_map.get(peer_key, 0) + int(value)
             item["peer_overflow"] = item["peer_overflow"] or bool(row.get("peer_overflow", False))
+            item["dropped_batches"] = max(item["dropped_batches"], int(row.get("dropped_batches", 0)))
             channel = int(row.get("channel", -1))
             for field, peer_field, count_field in (
                     ("send_peer_protocol_bytes", "send_peers", "send_count_by_protocol"),
@@ -354,6 +356,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                                 if value["send_rate"] < baseline * slow_rate_ratio)
         topology_fault = topology_analysis["status"] in ("RING_ASYMMETRY", "TREE_ASYMMETRY")
         status = "MISSING_COMPLETION" if missing or incomplete else (
+            "DIAGNOSTIC_BATCH_DROPPED" if any(v["dropped_batches"] for v in by_rank.values()) else
             "COMM_SLOW" if slow_ranks else
             topology_analysis["status"] if topology_fault else
             "COUNT_MISMATCH" if count_mismatch and not topology_pending else
@@ -394,6 +397,8 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                                                              if value["peer_overflow"]),
                         "peer_data_inconsistent_ranks": sorted(set(peer_inconsistent)),
                         "peer_data_inconsistent_channels": peer_inconsistent_channels,
+                        "diagnostic_dropped_ranks": sorted(rank for rank, value in by_rank.items()
+                                                            if value["dropped_batches"]),
                         "op_counts": op_counts,
                         "topology_edges": topology_edges,
                         "topology_groups": topology_groups,
