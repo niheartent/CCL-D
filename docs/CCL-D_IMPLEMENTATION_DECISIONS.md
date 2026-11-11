@@ -20,7 +20,7 @@
 
 ## 2. 多 channel 操作的结束边界
 
-采用：**以一次 plan 的所有 channel/work 完成作为用户操作的整体结束**。
+采用：**以同一 TraceID 对应的所有 plan/work/channel 完成作为用户操作的整体结束**。
 
 规则：
 
@@ -28,12 +28,13 @@
 - 每个 channel 在同一个 operation body 下保存自己的 `sendCount`/`recvCount`；
 - 诊断线程可以在运行期间按 channel 周期采样；
 - 单个 kernel/channel 结束只更新 channel 完成状态，不回收 operation record；
-- plan 级结束通知到达且所有预期 channel/work 都完成后，才输出最终操作记录；
+- RCCL 可能因 work/FIFO 预算把一个操作拆到多个 kernel plan；不能把任意单个 plan callback 当成操作结束；
+- host 记录该 TraceID 的预期 channel/work 片段，所有相关 plan 的完成通知到齐后，才输出最终操作记录；
 - 若 plan 级结束通知未到达，记录进入 `MISSING_COMPLETION`；
 - 若 operation record 本身未分配或无法挂接，优先报告 `RESOURCE_EXHAUSTED`/`OBSERVATION_DROPPED`；
 - communicator 销毁时，未完成 operation record 必须显式标记并回收。
 
-选择理由：TraceID 在材料中表示“一轮集合通信操作”，不是一个 channel 或一个 kernel。plan 是当前 RCCL host 侧组织多 channel work 的边界，按 plan 聚合才能避免同一操作被拆成多个诊断事件；channel 级数据仍保留，满足 Ring/Tree 和速率分析。
+选择理由：TraceID 在材料中表示“一轮集合通信操作”，不是一个 channel 或一个 kernel。RCCL plan 是 work 提交边界，但一个操作可能跨多个 plan；因此按 TraceID 聚合全部相关 work/channel 完成事件，避免把一个操作拆成多个诊断事件。channel 级数据仍保留，满足 Ring/Tree 和速率分析。
 
 ## 3. 实现约束
 
@@ -42,6 +43,6 @@
 1. host 侧先创建 operation record 并分配 `kernelIndex`；
 2. work 元数据携带 `kernelIndex` 和 operation identity；
 3. device 按 operation body/channel 写入计数；
-4. plan 完成通知驱动最终输出和回收；
+4. 所有相关 plan/work 的完成通知驱动最终输出和回收；
 5. slot 忙和 callback 缺失分别进入不同状态；
 6. 单元测试先覆盖资源耗尽、跨 channel 聚合、重复回收和销毁清理，再进行 HIP 编译。

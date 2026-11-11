@@ -59,3 +59,7 @@ cmake --build ccld-artifacts/dev-gfx936/build --parallel 24
 
 - `dev-gfx936`：窄函数集、`RelWithDebInfo`，用于快速迭代；
 - `full-gfx936`：全函数集、Release，用于最终安装和验收。
+
+## 窄函数集实测
+
+已在 `ccld-artifacts/dev-gfx936/config-check` 使用 gfx936 和 6 组指定 device function 完成一次开发构建，生成 7 个 `gensrc` 文件并成功生成 `librccl.so`。HIP linker 报告约 `12.3 s`。这个测量包含窄 device function 集，但仍构建 RCCL host 源码；不能把它当成完整 RCCL 构建时间。它证明了可用较小的 device 集快速检查编译和链接错误。

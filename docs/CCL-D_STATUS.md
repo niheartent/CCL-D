@@ -37,8 +37,8 @@
 ## 已确定的实现决策
 
 - LRU body 用尽时不阻塞通信、不覆盖活动记录、不自动扩容；输出 `RESOURCE_EXHAUSTED` 或 `OBSERVATION_DROPPED`。
-- 多 channel 操作以一个 plan 的所有预期 channel/work 完成为整体结束；channel 级采样保留，plan 级通知负责最终输出和回收。
-- 这两项是本工程的实现决策，不是材料中明确给出的原文规则。详细理由见 [`CCL-D_IMPLEMENTATION_DECISIONS.md`](CCL-D_IMPLEMENTATION_DECISIONS.md)。
+- 多 channel 操作以同一 TraceID 的全部 plan/work/channel 完成为整体结束；一个 RCCL plan callback 不能单独结束跨 plan 操作。
+- 这两项是本工程的实现决策，不是材料中明确给出的原文规则。详细理由见 [`CCL-D_IMPLEMENTATION_DECISIONS.md`](CCL-D_IMPLEMENTATION_DECISIONS.md)。host 侧独立状态机原型已通过单测，尚未接入 RCCL planner/work。
 
 ## 当前明确问题
 
