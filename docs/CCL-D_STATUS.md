@@ -2,11 +2,15 @@
 
 本项目目标是复现所提供 CCL-D 材料中的集合通信 slow/hang 诊断能力。CCL-D 是脱敏实现分支，不能把 CCL-D 论文已有内容等同于 CCL-D 全部功能。
 
+## 实验方案
+
+完整的场景、指标、验收门槛和执行顺序见 [`docs/CCL-D_TEST_PLAN.md`](CCL-D_TEST_PLAN.md)。当前只固化测试设计，待新版通信库和核心功能完成后按阶段执行。
+
 ## 已完成并实测
 
 | 能力 | 状态 | 证据 |
 |---|---|---|
-| gfx936 独立 RCCL/CCL-D 安装 | 完成 | ccld-artifacts/dtk-26.04-gfx936-try1/install |
+| gfx936 独立 RCCL/CCL-D 安装 | 完成 | ccld-artifacts/sample-probe-install |
 | 双节点共享存储和 SSH | 完成 | HPDPS-6/7，SSH 2234 |
 | UCX 独立升级 | 完成 | 两节点 /opt/ucx-1.16.0，旧版保留 |
 | MPI 双节点通信 | 完成 | 2 rank、8 rank AllReduce |
@@ -14,7 +18,7 @@
 | 多轮通信 | 基础完成 | 20 轮、4096 元素通过 |
 | 正常 monitor | 完成 | exit 0 |
 | 远端 rank 故障检测 | 基础完成 | rank 7 第 10 轮可检出 |
-| Python analyzer 单测 | 完成 | 16 项通过 |
+| Python analyzer 单测 | 完成 | 31 项通过 |
 
 ## CCL-D 能力对照
 
@@ -31,7 +35,7 @@
 | Ring 横向比较 | 基础完成 | completion 输出 `ring_prev/ring_next`，分析器按 channel 校验环的互为前后继关系和速率；缺字段时明确输出 `RING_TOPOLOGY_PENDING` |
 | Tree 同层比较 | 基础完成 | completion 输出 `tree_up/tree_down0..2/tree_depth`，分析器按真实 channel/depth 比较同层推进速率；仍需真实多节点 Tree 回归 |
 | peer/edge 拓扑字段 | 基础完成 | Ring/Tree 使用 RCCL channel 实际拓扑字段；`topology_groups` 继续保留收发边聚合，避免根据 rank 编号猜拓扑 |
-| 算法和协议一致性 | 部分完成 | completion 有字段，路径覆盖和校验不足 |
+| 算法和协议一致性 | 第一版完成 | completion 输出算法、协议及 Simple/LL/LL128 分协议 send/recv 计数；仍需多路径实测和一致性校验 |
 | 计算慢识别 | 未完成 | 没有计算阶段与 collective 开始边界分析 |
 | kernel/通信推进慢识别 | 部分完成 | 单轮 COMM_SLOW 与连续窗口 COMM_SLOW_WINDOW 已实现；真实 GPU/网络慢和拓扑分层仍未完成 |
 | 未进入 collective 检测 | 基础完成 | enqueue 缺失可报 MISSING_RANK |
@@ -53,7 +57,7 @@
 
 按论文设计的完整验收口径，当前已完成的是 Trace/enqueue/completion/monitor 主链路和基础 Ring/Tree 结构分析，约占整体目标的一半以上。剩余工作集中在四类：
 
-1. **高精度采样**：已完成第一版 pinned buffer 周期读取、sample JSONL 和同节点停滞判定；后续实现 trace slot/LRU 生命周期和 Simple、LL、LL128 的协议级 send/recv 统计。
+1. **高精度采样**：已完成第一版 pinned buffer 周期读取、sample JSONL 和同节点停滞判定；后续实现 trace slot/LRU 生命周期、协议级计数的跨 rank 一致性校验，以及 Simple、LL、LL128 的真实路径覆盖。
 2. **决策树**：把未进入、参数不一致、kernel 未完成、计算慢、通信推进慢和拓扑失衡统一成带证据的根因结论。
 3. **覆盖矩阵**：在两节点 8 rank 上覆盖 Ring/Tree、AllReduce/AllGather/ReduceScatter/Broadcast、多 communicator、stream 和长时间压力；再补 Graph、CollNet、NVLS、MSCCL 路径。
 4. **真实故障与开销评估**：补充可控的进程退出、通信线程停滞、UCX/网络路径异常实验，并测量关闭/开启诊断时的吞吐、端到端时间、CPU、pinned memory 和日志量。
