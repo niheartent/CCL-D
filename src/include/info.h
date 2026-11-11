@@ -33,6 +33,9 @@ struct ncclInfo {
   const char* UserProto;
   const char* UserAlgo;
   int UserChannels;
+  // Host-assigned CCL-D physical body index. This is not the TraceID.
+  uint32_t ccldKernelIndex;
+  uint64_t ccldCounter;
 };
 
 #endif

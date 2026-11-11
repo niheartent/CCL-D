@@ -241,6 +241,7 @@ struct ncclTaskColl {
   void* sendMhandle;
   void* recvMhandle;
   uint64_t opCount;
+  uint32_t ccldKernelIndex;
   //Optional User Configuration Parameter: Protocol Sting/Algorithm String/nChannels
   const char* UserProto;
   const char* UserAlgo;
@@ -251,6 +252,7 @@ struct ncclTaskP2p {
   void* buff;
   size_t bytes;
   uint64_t opCount;
+  uint32_t ccldKernelIndex;
   //Optional User Configuration Parameter: Protocol Sting/Algorithm String/nChannels
   const char* UserProto;
   int UserChannels;

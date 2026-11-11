@@ -398,6 +398,7 @@ set(SRC_FILES
   src/bootstrap.cc
   src/channel.cc
   src/include/ccld_diagnostic.h
+  src/include/ccld_record_pool.h
   src/ccld_diagnostic.cc
   src/collectives.cc
   src/duNcclConfig.cc

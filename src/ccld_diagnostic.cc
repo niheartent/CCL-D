@@ -3,6 +3,7 @@
 #include "comm.h"
 #include "nccl.h"
 #include "device.h"
+#include "ccld_record_pool.h"
 
 #include <atomic>
 #include <chrono>
@@ -11,14 +12,18 @@
 #include <iomanip>
 #include <limits>
 #include <mutex>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 namespace {
 std::mutex g_lock;
 std::ofstream g_log;
 std::string g_path;
 std::atomic<bool> g_initialized{false};
+std::unordered_map<const ncclComm*, std::unique_ptr<rccl_ccld::RecordPool>> g_pools;
+std::unordered_map<const ncclComm*, std::unordered_map<uint64_t, uint32_t>> g_indices;
 
 bool enabled() {
   const char* value = std::getenv("RCCL_CCLD_ENABLE");
@@ -88,7 +93,7 @@ bool faultSelected(const ncclComm* comm, uint64_t counter) {
 
 bool rcclCcldEnabled() { return enabled(); }
 
-void rcclCcldRecordEnqueue(const struct ncclInfo* info) {
+void rcclCcldRecordEnqueue(struct ncclInfo* info) {
   if (!info || !info->comm || !enabled()) return;
   std::lock_guard<std::mutex> guard(g_lock);
   init(info->comm);
@@ -102,6 +107,20 @@ void rcclCcldRecordEnqueue(const struct ncclInfo* info) {
   // Use RCCL's canonical operation counter so enqueue and device completion
   // resolve to the same trace slot. RCCL advances it in the scheduling path.
   const uint64_t counter = comm->opCount;
+  auto poolIt = g_pools.find(comm);
+  if (poolIt == g_pools.end()) {
+    poolIt = g_pools.emplace(comm, std::unique_ptr<rccl_ccld::RecordPool>(new rccl_ccld::RecordPool(CCLD_DIAG_SLOTS))).first;
+  }
+  uint32_t kernelIndex = UINT32_MAX;
+  auto indexIt = g_indices[comm].find(counter);
+  if (indexIt != g_indices[comm].end()) {
+    kernelIndex = indexIt->second;
+  } else if (poolIt->second->reserve(counter, 1, &kernelIndex) == rccl_ccld::ReserveResult::Reserved) {
+    g_indices[comm][counter] = kernelIndex;
+  } else {
+    kernelIndex = UINT32_MAX;
+  }
+  info->ccldKernelIndex = kernelIndex;
   const char* fault = std::getenv("RCCL_CCLD_FAULT");
   const bool inject = fault && faultSelected(comm, counter);
   if (inject && std::string(fault) == "skip_record") return;
@@ -125,14 +144,18 @@ void rcclCcldRecordEnqueue(const struct ncclInfo* info) {
         << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
         << ",\"op\":\"" << op << "\",\"count\":" << count
         << ",\"bytes\":" << bytes << ",\"datatype\":" << static_cast<int>(info->datatype)
-        << ",\"root\":" << info->root << "}\n";
+        << ",\"root\":" << info->root << ",\"kernel_index\":";
+  if (kernelIndex == UINT32_MAX) g_log << "null";
+  else g_log << kernelIndex;
+  g_log << "}\n";
   g_log.flush();
 }
 
 void rcclCcldForgetComm(const struct ncclComm* comm) {
   if (!comm) return;
   std::lock_guard<std::mutex> guard(g_lock);
-  // No diagnostic-side counter is retained; this avoids host/device drift.
+  g_indices.erase(comm);
+  g_pools.erase(comm);
 }
 
 void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,

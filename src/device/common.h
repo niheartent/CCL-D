@@ -617,21 +617,24 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
     if (tid == 0) __insert_timestamp(__LINE__);
     if (tid == 0 && ncclShmem.comm.ccldDiag != nullptr) {
       uint64_t batchOpCount = 0;
+      uint32_t batchKernelIndex = UINT32_MAX;
       uint8_t batchAlgorithm = 0xff;
       uint8_t batchProtocol = 0xff;
       if (ncclShmem.workType == ncclDevWorkTypeP2p) {
         struct ncclDevWorkP2p* p2p = (struct ncclDevWorkP2p*)ncclShmem.workStorage;
         batchOpCount = p2p->sendOpCount != 0 ? p2p->sendOpCount : p2p->recvOpCount;
+        batchKernelIndex = p2p->sendCcldKernelIndex != UINT32_MAX ? p2p->sendCcldKernelIndex : p2p->recvCcldKernelIndex;
         batchProtocol = (p2p->sendProtoLL || p2p->recvProtoLL) ? NCCL_PROTO_LL : NCCL_PROTO_SIMPLE;
       } else {
         struct ncclDevWorkColl* current = (struct ncclDevWorkColl*)ncclShmem.workStorage;
         batchOpCount = current->opCount;
+        batchKernelIndex = current->ccldKernelIndex;
         batchAlgorithm = current->algorithm;
         batchProtocol = current->protocol;
       }
-      ncclShmem.ccldDiagSlot = batchOpCount % CCLD_DIAG_SLOTS;
-      struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR;
-      ncclShmem.ccldDiagActive = (__atomic_load_n(&ccld->state, __ATOMIC_ACQUIRE) == 0);
+      ncclShmem.ccldDiagSlot = (int)batchKernelIndex;
+      struct ncclCcldDiag* ccld = batchKernelIndex == UINT32_MAX ? nullptr : CCLD_DIAG_SLOT_PTR;
+      ncclShmem.ccldDiagActive = ccld != nullptr && (__atomic_load_n(&ccld->state, __ATOMIC_ACQUIRE) == 0);
       if (ncclShmem.ccldDiagActive) {
         CCLD_DIAG_RESET();
         ccld->opCount = batchOpCount; ccld->funcIndex = ncclShmem.funcId;

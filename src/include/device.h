@@ -235,6 +235,7 @@ struct alignas(16) ncclDevWorkP2p {
   size_t sendBytes, recvBytes;
   int sendRank, recvRank;
   uint64_t sendOpCount, recvOpCount;
+  uint32_t sendCcldKernelIndex, recvCcldKernelIndex;
   // From the part index, nP2pChannels, and channelBase the device code can
   // calculate which part of the transfer a channel is responsible for.
   uint8_t nP2pChannels; // Always equal to comm->p2pnChannels
@@ -308,6 +309,7 @@ struct alignas(16) ncclDevWorkColl {
   };
   uint64_t redOpArg;
   uint64_t opCount;
+  uint32_t ccldKernelIndex;
   uint8_t algorithm;
   uint8_t protocol;
   uint16_t reserved;

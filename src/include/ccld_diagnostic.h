@@ -6,6 +6,7 @@
 
 struct ncclInfo;
 struct ncclComm;
+struct ncclInfo;
 struct ncclCcldDiag;
 #ifdef ENABLE_COLLTRACE
 struct ncclCollTrace;
@@ -13,7 +14,7 @@ struct ncclCollTrace;
 
 // Record the host-side beginning of a collective operation.  The recorder is
 // disabled by default and is intentionally independent of the transport path.
-void rcclCcldRecordEnqueue(const struct ncclInfo* info);
+void rcclCcldRecordEnqueue(struct ncclInfo* info);
 bool rcclCcldEnabled();
 
 // Release per-communicator diagnostic state after RCCL has accepted destroy.
