@@ -98,4 +98,4 @@ HPDPS-6 和 HPDPS-7 各启动 4 个 rank 的 AllReduce 已通过，8 个 rank �
 
 completion 记录中的 `send_rank`、`recv_rank`、`channel_base` 现在会进一步聚合为 `topology_groups`。每条边包含 send/recv 总量、持续时间和边级速率；当每条 completion 都带有 peer/channel 字段时，结果会标记 `topology_ready=true`。这一步提供了 Ring/Tree 分层比较的输入，但尚未根据 Tree 层级或 Ring 对称性做最终异常判定。
 
-当前已加入拓扑判定：Ring 按 channel 检查每个 rank 的出入边、互为对端关系和边速率，输出 `RING_SYMMETRIC` 或 `RING_ASYMMETRY`；Tree 从 RCCL channel 的 `tree_up/tree_down/tree_depth` 构造父子边，并按 depth 比较边速率，输出 `TREE_SYMMETRIC` 或 `TREE_ASYMMETRY`，缺少字段则输出 `TREE_LEVEL_PENDING`。仍需真实多节点 Tree 回归，确认不同 collective/protocol 路径的字段覆盖。
+当前已加入拓扑判定：RCCL 的算法枚举按源码定义处理（`Tree=0`、`Ring=1`）。Ring 直接使用 completion 输出的 `ring_prev/ring_next`，按 channel 检查每个 rank 的互为前后继关系和收发速率，输出 `RING_SYMMETRIC` 或 `RING_ASYMMETRY`；缺少 Ring 邻接字段时输出 `RING_TOPOLOGY_PENDING`。Tree 直接使用 RCCL channel 的 `tree_up/tree_down0..2/tree_depth`，按 channel 和真实 depth 比较同层 rank 的推进速率，输出 `TREE_SYMMETRIC` 或 `TREE_ASYMMETRY`；缺少任一字段时输出 `TREE_LEVEL_PENDING`。当前仍需真实多节点 Tree 回归，确认不同 collective/protocol 路径的字段覆盖。

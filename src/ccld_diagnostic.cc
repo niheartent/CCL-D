@@ -166,6 +166,10 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
           << ",\"tree_down1\":" << tree.down[1]
           << ",\"tree_down2\":" << tree.down[2]
           << ",\"tree_depth\":" << tree.depth;
+  } else if (diag->algorithm == NCCL_ALGO_RING && diag->channel < MAXCHANNELS) {
+    const ncclRing& ring = comm->channels[diag->channel].ring;
+    g_log << ",\"ring_prev\":" << ring.prev
+          << ",\"ring_next\":" << ring.next;
   }
   g_log << "}\n";
   g_log.flush();

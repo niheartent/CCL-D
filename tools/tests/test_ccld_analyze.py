@@ -156,9 +156,9 @@ class CcldAnalyzeTest(unittest.TestCase):
         rows = []
         for rank, peer in ((0, 1), (1, 0)):
             rows.append({"phase": "complete", "comm_id": "abcd", "counter": 11,
-                         "rank": rank, "nranks": 2, "algorithm": 0,
-                         "send_count": 8, "recv_count": 8, "send_rank": peer,
-                         "recv_rank": peer, "channel_base": 0,
+                         "rank": rank, "nranks": 2, "algorithm": 1,
+                         "channel": 0, "ring_prev": peer, "ring_next": peer,
+                         "send_count": 8, "recv_count": 8,
                          "start_timestamp": 0, "end_timestamp": 4})
         result = analyze_completions(rows)[0]
         self.assertEqual(result["topology_analysis"]["status"], "RING_SYMMETRIC")
@@ -167,47 +167,53 @@ class CcldAnalyzeTest(unittest.TestCase):
         rows = []
         for rank, peer, count in ((0, 1, 8), (1, 0, 2)):
             rows.append({"phase": "complete", "comm_id": "abcd", "counter": 12,
-                         "rank": rank, "nranks": 2, "algorithm": 0,
+                         "rank": rank, "nranks": 2, "algorithm": 1,
                          "send_count": count, "recv_count": count,
-                         "send_rank": peer, "recv_rank": peer, "channel_base": 0,
+                         "channel": 0, "ring_prev": peer, "ring_next": peer,
                          "start_timestamp": 0, "end_timestamp": 4})
         result = analyze_completions(rows)[0]
         self.assertEqual(result["topology_analysis"]["status"], "RING_ASYMMETRY")
 
     def test_tree_topology_requires_explicit_levels(self):
         rows = [{"phase": "complete", "comm_id": "abcd", "counter": 13,
-                 "rank": 0, "nranks": 2, "algorithm": 1, "send_count": 8,
-                 "recv_count": 8, "send_rank": 1, "recv_rank": 1,
-                 "channel_base": 0}]
+                 "rank": 0, "nranks": 2, "algorithm": 0, "send_count": 8,
+                 "recv_count": 8, "tree_up": -1, "tree_down0": 1,
+                 "tree_down1": -1, "tree_down2": -1,
+                 "channel": 0}]
         result = analyze_completions(rows)[0]
         self.assertEqual(result["topology_analysis"]["status"], "TREE_LEVEL_PENDING")
 
     def test_tree_topology_compares_rates_by_level(self):
         rows = []
-        for rank, peer, count in ((0, 1, 8), (1, 0, 2)):
+        topology = [(0, -1, 1, 2, -1, 0, 800),
+                    (1, 0, 3, -1, -1, 1, 800),
+                    (2, 0, -1, -1, -1, 1, 200),
+                    (3, 1, -1, -1, -1, 2, 800)]
+        for rank, up, d0, d1, d2, depth, count in topology:
             rows.append({"phase": "complete", "comm_id": "abcd", "counter": 14,
-                         "rank": rank, "nranks": 2, "algorithm": 1,
+                         "rank": rank, "nranks": 4, "algorithm": 0,
                          "send_count": count, "recv_count": count,
-                         "send_rank": peer, "recv_rank": peer, "channel_base": 0,
-                         "tree_level": 0, "start_timestamp": 0, "end_timestamp": 4})
+                         "tree_up": up, "tree_down0": d0,
+                         "tree_down1": d1, "tree_down2": d2, "tree_depth": depth,
+                         "channel": 0, "start_timestamp": 0, "end_timestamp": 4})
         result = analyze_completions(rows)[0]
         self.assertEqual(result["topology_analysis"]["status"], "TREE_ASYMMETRY")
 
     def test_tree_count_difference_waits_for_topology(self):
         rows = [{"phase": "complete", "comm_id": "abcd", "counter": 3,
-                 "rank": 0, "nranks": 2, "channel": 0, "algorithm": 1,
+                 "rank": 0, "nranks": 2, "channel": 0, "algorithm": 0,
                  "protocol": 2, "send_count": 8, "recv_count": 8},
                 {"phase": "complete", "comm_id": "abcd", "counter": 3,
-                 "rank": 1, "nranks": 2, "channel": 0, "algorithm": 1,
+                 "rank": 1, "nranks": 2, "channel": 0, "algorithm": 0,
                  "protocol": 2, "send_count": 4, "recv_count": 4}]
         self.assertEqual(analyze_completions(rows)[0]["status"], "TOPOLOGY_PENDING")
 
     def test_ring_count_difference_waits_for_edge_topology(self):
         rows = [{"phase": "complete", "comm_id": "abcd", "counter": 4,
-                 "rank": 0, "nranks": 2, "channel": 0, "algorithm": 0,
+                 "rank": 0, "nranks": 2, "channel": 0, "algorithm": 1,
                  "protocol": 0, "send_count": 8, "recv_count": 8},
                 {"phase": "complete", "comm_id": "abcd", "counter": 4,
-                 "rank": 1, "nranks": 2, "channel": 0, "algorithm": 0,
+                 "rank": 1, "nranks": 2, "channel": 0, "algorithm": 1,
                  "protocol": 0, "send_count": 4, "recv_count": 4}]
         self.assertEqual(analyze_completions(rows)[0]["status"], "TOPOLOGY_PENDING")
 

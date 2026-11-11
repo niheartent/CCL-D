@@ -28,9 +28,9 @@
 | 诊断线程生命周期 | 部分完成 | 当前轮询 complete，未实现完整 callback/slot 回收模型 |
 | kernel 速率离群检查 | 部分完成 | completion start/end 与 send/recv 总数可计算 rank 速率并输出 COMM_SLOW；新增可选连续窗口 COMM_SLOW_WINDOW |
 | sendRate/recvRate 周期采样 | 未完成 | 没有周期采样、delta、窗口化停滞判断 |
-| Ring 横向比较 | 部分完成 | 缺少 peer/edge 时只能降级为 TOPOLOGY_PENDING |
-| Tree 同层比较 | 基础完成 | RCCL completion 已输出 tree_up/tree_down/tree_depth，分析器按 depth 比较同层边；仍需真实多节点 Tree 回归 |
-| peer/edge 拓扑字段 | 部分完成 | completion 已输出并聚合 peer/channel 边字段，包含边级收发量和速率；Ring 对称性已实现，Tree 依赖 level 字段 |
+| Ring 横向比较 | 基础完成 | completion 输出 `ring_prev/ring_next`，分析器按 channel 校验环的互为前后继关系和速率；缺字段时明确输出 `RING_TOPOLOGY_PENDING` |
+| Tree 同层比较 | 基础完成 | completion 输出 `tree_up/tree_down0..2/tree_depth`，分析器按真实 channel/depth 比较同层推进速率；仍需真实多节点 Tree 回归 |
+| peer/edge 拓扑字段 | 基础完成 | Ring/Tree 使用 RCCL channel 实际拓扑字段；`topology_groups` 继续保留收发边聚合，避免根据 rank 编号猜拓扑 |
 | 算法和协议一致性 | 部分完成 | completion 有字段，路径覆盖和校验不足 |
 | 计算慢识别 | 未完成 | 没有计算阶段与 collective 开始边界分析 |
 | kernel/通信推进慢识别 | 部分完成 | 单轮 COMM_SLOW 与连续窗口 COMM_SLOW_WINDOW 已实现；真实 GPU/网络慢和拓扑分层仍未完成 |
@@ -51,7 +51,7 @@
 
 ## 结论
 
-当前是 CCL-D 诊断链路的第一版可运行复现，已具备 Trace/enqueue/completion/monitor 骨架和基础故障检测；还不是完整 CCL-D。CCL-D 已增加基于 completion start/end 和 send/recv 总数的第一版 COMM_SLOW 速率离群检查；周期 send/recv 采样、Ring/Tree 拓扑分层比较、根因决策树和真实 slow/hang 故障实验仍未完成。
+当前是 CCL-D 诊断链路的第一版可运行复现，已具备 Trace/enqueue/completion/monitor 骨架和基础故障检测；还不是完整 CCL-D。CCL-D 已增加基于 completion start/end 和 send/recv 总数的第一版 COMM_SLOW 速率离群检查，并可基于 RCCL 实际 Ring/Tree 拓扑做结构和同层速率比较；周期 send/recv 采样、根因决策树和真实 slow/hang 故障实验仍未完成。
 
 ## 下一阶段验收顺序
 

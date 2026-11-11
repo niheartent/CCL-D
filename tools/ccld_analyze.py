@@ -125,26 +125,18 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                                            "end_timestamp": None})
         for row in rows:
             if row.get("send_rank") is None or row.get("recv_rank") is None:
-                edges = []
-                if int(row.get("algorithm", -1)) == 1:
-                    peers = [row.get("tree_up"), row.get("tree_down0"),
-                             row.get("tree_down1"), row.get("tree_down2")]
-                    edges = [(int(row["rank"]), int(peer), int(peer),
-                              int(row.get("channel", -1))) for peer in peers
-                             if peer is not None and int(peer) >= 0]
-            else:
-                edges = [(int(row["rank"]), int(row["send_rank"]),
-                          int(row["recv_rank"]), int(row.get("channel_base", -1)))]
-            for edge in edges:
-                item = edge_values[edge]
-                item["send_count"] += int(row.get("send_count", 0))
-                item["recv_count"] += int(row.get("recv_count", 0))
-                item["records"] += 1
-                for field, reducer in (("start_timestamp", min), ("end_timestamp", max)):
-                    value = row.get(field)
-                    if value is not None:
-                        value = int(value)
-                        item[field] = value if item[field] is None else reducer(item[field], value)
+                continue
+            edge = (int(row["rank"]), int(row["send_rank"]),
+                    int(row["recv_rank"]), int(row.get("channel_base", -1)))
+            item = edge_values[edge]
+            item["send_count"] += int(row.get("send_count", 0))
+            item["recv_count"] += int(row.get("recv_count", 0))
+            item["records"] += 1
+            for field, reducer in (("start_timestamp", min), ("end_timestamp", max)):
+                value = row.get(field)
+                if value is not None:
+                    value = int(value)
+                    item[field] = value if item[field] is None else reducer(item[field], value)
         topology_groups = []
         for edge in sorted(edge_values):
             item = edge_values[edge]
@@ -162,68 +154,66 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                                    "recv_rate": (item["recv_count"] / duration
                                                   if duration else None),
                                    "records": item["records"]})
-        # Preserve an explicitly emitted tree level when available.  RCCL
-        # versions that do not expose it remain pending rather than guessing
-        # a level from rank numbers.
-        for group in topology_groups:
-            matching = [r for r in rows
-                        if int(r["rank"]) == group["rank"] and
-                        ((r.get("send_rank") is not None and
-                          int(r["send_rank"]) == group["send_rank"] and
-                          int(r.get("recv_rank", -1)) == group["recv_rank"] and
-                          int(r.get("channel_base", -1)) == group["channel_base"]) or
-                         (int(r.get("algorithm", -1)) == 1 and
-                          int(r.get("channel", -1)) == group["channel_base"] and
-                          group["send_rank"] in {int(r.get("tree_up", -1)),
-                                                   int(r.get("tree_down0", -1)),
-                                                   int(r.get("tree_down1", -1)),
-                                                   int(r.get("tree_down2", -1))}))]
-            levels = {int(r.get("tree_level", r.get("tree_depth"))) for r in matching
-                      if r.get("tree_level") is not None or r.get("tree_depth") is not None}
-            if len(levels) == 1:
-                group["tree_level"] = levels.pop()
         topology_analysis = {"status": "NO_TOPOLOGY"}
-        if topology_groups and any(a == 0 for a in algorithms):
-            by_channel = defaultdict(list)
-            for group in topology_groups:
-                by_channel[group["channel_base"]].append(group)
-            asymmetric = []
-            for channel, edges in by_channel.items():
-                outgoing = defaultdict(list)
-                incoming = defaultdict(list)
-                for edge in edges:
-                    outgoing[edge["rank"]].append(edge["send_rank"])
-                    incoming[edge["rank"]].append(edge["recv_rank"])
-                ranks = set(outgoing) | set(incoming)
-                reciprocal = {(e["rank"], e["send_rank"]) for e in edges}
-                bad = (any(len(outgoing[r]) != 1 or len(incoming[r]) != 1 for r in ranks)
-                       or any((peer, rank) not in reciprocal
-                              for rank, peer in reciprocal))
-                rates = [e["send_rate"] for e in edges if e["send_rate"] is not None]
-                if rates and min(rates) > 0 and max(rates) / min(rates) >= 2:
-                    bad = True
-                if bad:
-                    asymmetric.append(channel)
-            topology_analysis = {"status": "RING_ASYMMETRY" if asymmetric else "RING_SYMMETRIC",
-                                 "channels": sorted(by_channel),
-                                 "asymmetric_channels": sorted(asymmetric)}
-        elif topology_groups and any(a == 1 for a in algorithms):
-            levels = {g.get("tree_level") for g in topology_groups}
-            if None in levels:
+        # RCCL enum values: Tree=0, Ring=1.  Collective completion counters
+        # are channel aggregates, not per-edge counts; use actual topology
+        # links for structure and per-rank/channel rates for performance.
+        ring_rows = [r for r in rows if int(r.get("algorithm", -1)) == 1]
+        tree_rows = [r for r in rows if int(r.get("algorithm", -1)) == 0]
+        if ring_rows:
+            if any(r.get("ring_prev") is None or r.get("ring_next") is None for r in ring_rows):
+                topology_analysis = {"status": "RING_TOPOLOGY_PENDING",
+                                     "reason": "completion records lack ring_prev/ring_next"}
+            else:
+                by_channel = defaultdict(list)
+                for row in ring_rows:
+                    by_channel[int(row.get("channel", -1))].append(row)
+                asymmetric = []
+                for channel, channel_rows in by_channel.items():
+                    by_rank_row = {int(r["rank"]): r for r in channel_rows}
+                    ranks = set(by_rank_row)
+                    bad = (len(by_rank_row) != len(channel_rows) or
+                           any(int(r["ring_prev"]) not in ranks or int(r["ring_next"]) not in ranks
+                               for r in channel_rows))
+                    if not bad:
+                        bad = any(int(by_rank_row[int(r["ring_next"])]["ring_prev"]) != int(r["rank"])
+                                  or int(by_rank_row[int(r["ring_prev"])]["ring_next"]) != int(r["rank"])
+                                  for r in channel_rows)
+                    rates = []
+                    for r in channel_rows:
+                        start, end = r.get("start_timestamp"), r.get("end_timestamp")
+                        duration = int(end) - int(start) if start is not None and end is not None else 0
+                        if duration > 0 and int(r.get("send_count", 0)) > 0:
+                            rates.append(int(r["send_count"]) / duration)
+                    if len(rates) >= 2 and min(rates) > 0 and max(rates) / min(rates) >= 2:
+                        bad = True
+                    if bad:
+                        asymmetric.append(channel)
+                topology_analysis = {"status": "RING_ASYMMETRY" if asymmetric else "RING_SYMMETRIC",
+                                     "channels": sorted(by_channel),
+                                     "asymmetric_channels": sorted(asymmetric)}
+        elif tree_rows:
+            required = ("tree_up", "tree_down0", "tree_down1", "tree_down2", "tree_depth")
+            if any(any(r.get(field) is None for field in required) for r in tree_rows):
                 topology_analysis = {"status": "TREE_LEVEL_PENDING",
-                                     "reason": "completion records lack tree_level"}
+                                     "reason": "completion records lack tree peers or depth"}
             else:
                 by_level = defaultdict(list)
-                for group in topology_groups:
-                    by_level[group["tree_level"]].append(group)
+                for row in tree_rows:
+                    start, end = row.get("start_timestamp"), row.get("end_timestamp")
+                    duration = int(end) - int(start) if start is not None and end is not None else 0
+                    if duration > 0 and int(row.get("send_count", 0)) > 0:
+                        key = (int(row.get("channel", -1)), int(row["tree_depth"]))
+                        by_level[key].append(int(row["send_count"]) / duration)
                 asymmetric = []
-                for level, edges in by_level.items():
-                    rates = [e["send_rate"] for e in edges if e["send_rate"] is not None]
-                    if rates and min(rates) > 0 and max(rates) / min(rates) >= 2:
-                        asymmetric.append(level)
+                for (channel, depth), rates in by_level.items():
+                    if len(rates) >= 2 and min(rates) > 0 and max(rates) / min(rates) >= 2:
+                        asymmetric.append({"channel": channel, "depth": depth})
                 topology_analysis = {"status": "TREE_ASYMMETRY" if asymmetric else "TREE_SYMMETRIC",
-                                     "levels": sorted(by_level),
-                                     "asymmetric_levels": sorted(asymmetric)}
+                                     "channel_depths": [
+                                         {"channel": c, "depth": d, "ranks": len(rates)}
+                                         for (c, d), rates in sorted(by_level.items())],
+                                     "asymmetric_levels": asymmetric}
         # Ring ranks have symmetric degree. Tree and CollNet ranks may have
         # different degrees; those require topology-level grouping before a
         # count mismatch can be declared.
@@ -235,7 +225,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
         # turn such a difference into a false fault.  Synthetic records that
         # omit algorithm metadata ([-1]) retain the strict mismatch check.
         topology_pending = count_mismatch and (
-            nnodes > 1 or any(a not in (-1, 0) for a in algorithms) or 0 in algorithms)
+            nnodes > 1 or any(a != -1 for a in algorithms))
         incomplete = sorted(rank for rank, value in by_rank.items() if not value["complete"])
         for value in by_rank.values():
             start = value["start_timestamp"]
