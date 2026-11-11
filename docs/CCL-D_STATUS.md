@@ -49,6 +49,17 @@
 
 容器内合成 completion 矩阵已验证：stall 报 MISSING_COMPLETION，slow 报 COMM_SLOW 并定位 slow rank，missing completion 报 MISSING_COMPLETION。它们验证插桩、日志聚合和 monitor 决策，不能等价于真实 GPU kernel hang、驱动错误或 IB 链路中断。
 
+## 对齐设计目标的剩余工作
+
+按论文设计的完整验收口径，当前已完成的是 Trace/enqueue/completion/monitor 主链路和基础 Ring/Tree 结构分析，约占整体目标的一半以上。剩余工作集中在四类：
+
+1. **高精度采样**：实现 pinned buffer 的 trace slot/LRU 生命周期、诊断线程周期读取、delta 计算和窗口化停滞判断；补齐 Simple、LL、LL128 的协议级 send/recv 统计。
+2. **决策树**：把未进入、参数不一致、kernel 未完成、计算慢、通信推进慢和拓扑失衡统一成带证据的根因结论。
+3. **覆盖矩阵**：在两节点 8 rank 上覆盖 Ring/Tree、AllReduce/AllGather/ReduceScatter/Broadcast、多 communicator、stream 和长时间压力；再补 Graph、CollNet、NVLS、MSCCL 路径。
+4. **真实故障与开销评估**：补充可控的进程退出、通信线程停滞、UCX/网络路径异常实验，并测量关闭/开启诊断时的吞吐、端到端时间、CPU、pinned memory 和日志量。
+
+当前的 `COMM_SLOW`、`COMM_SLOW_WINDOW` 和合成 stall/slow 注入用于验证诊断链路；它们还不能替代真实 GPU kernel hang、驱动错误或网络中断实验。
+
 ## 结论
 
 当前是 CCL-D 诊断链路的第一版可运行复现，已具备 Trace/enqueue/completion/monitor 骨架和基础故障检测；还不是完整 CCL-D。CCL-D 已增加基于 completion start/end 和 send/recv 总数的第一版 COMM_SLOW 速率离群检查，并可基于 RCCL 实际 Ring/Tree 拓扑做结构和同层速率比较；周期 send/recv 采样、根因决策树和真实 slow/hang 故障实验仍未完成。

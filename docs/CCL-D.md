@@ -80,7 +80,7 @@ RCCL_CCLD_LIBDIR=/workspace/CCL-D/ccld-artifacts/dtk-26.04-gfx936-try1/install/l
 
 本阶段已增加第一版 kernel 级诊断：复用 RCCL 的 `ENABLE_COLLTRACE` device→host buffer，在每个 channel 的 kernel 生命周期内维护 `sendCount/recvCount`，并在 Simple、LL、LL128 primitive 完成一个操作后按 peer 数累加字节数；kernel end 由 host 诊断线程输出 `phase=complete`。monitor 会按 rank 汇总 completion，并报告 `COUNT_MISMATCH` 或 `MISSING_COMPLETION`。它可以验证“rank 是否完成 kernel，以及各 rank 的逻辑收发字节数是否一致”。 当前 monitor 还会使用 completion 的 `start_timestamp`、`end_timestamp` 与 send/recv 总数计算同一 collective 内的 rank 推进速率；低于中位数比例（默认 0.5）时报告 `COMM_SLOW` 并输出 `slow_ranks`、`send_rate`、`recv_rate`。该版本是 completion 级速率离群检查，不等同于论文中的周期窗口 sendRate/recvRate。
 
-仍需继续完善的部分是：将计数按 trace slot 而不是按当前 channel kernel 汇总；为每轮操作保存稳定的 start/end 和算法/协议字段；diagnostic thread 计算相邻采样的 sendRate/recvRate；tree 按同层 rank 比较；以及对 graph、CollNet、NVLS、MSCCL 路径补充计数。在拓扑字段缺失时，monitor 对算法为 ring 或 tree 且各 rank 计数不同的 completion 返回 `TOPOLOGY_PENDING`，避免把合法的 ring 边数差异误报为故障；只有未带算法元数据的合成记录才会直接触发 `COUNT_MISMATCH`。completion 记录同时保留 RCCL `opCount` 和可用的 peer/channel 拓扑字段，为 Ring/Tree 分组比较提供输入。当前计数注入仍然是诊断侧自检，不会让 RCCL 真正产生错误通信；故障脚本可模拟 kernel 停滞、慢速和缺失，并由单元测试覆盖 analyzer 分支。
+仍需继续完善的部分是：将计数按论文设计的 trace slot/LRU 生命周期管理，而不是按当前 channel kernel 做简化汇总；为每轮操作保存稳定的 start/end、算法和协议字段；由 diagnostic thread 计算相邻采样的 `sendRate/recvRate`；按 Simple、LL、LL128 的实际 primitive 位置分别统计成功收发；以及对 graph、CollNet、NVLS、MSCCL 路径补充计数。在拓扑字段缺失时，monitor 对 Ring 或 Tree completion 明确返回 `RING_TOPOLOGY_PENDING` 或 `TREE_LEVEL_PENDING`，避免把合法的算法差异误报为故障。completion 记录同时保留 RCCL `opCount` 和可用的 peer/channel 拓扑字段，为 Ring/Tree 分组比较提供输入。当前计数注入仍然是诊断侧自检，不会让 RCCL 真正产生错误通信；故障脚本可模拟 kernel 停滞、慢速和缺失，并由单元测试覆盖 analyzer 分支。
 
 ## 8 rank 跨节点实测
 
@@ -96,6 +96,6 @@ HPDPS-6 和 HPDPS-7 各启动 4 个 rank 的 AllReduce 已通过，8 个 rank �
 
 除单轮 `COMM_SLOW` 外，monitor 支持 `--slow-window 5`：将连续 5 个 collective 作为一个窗口，只有持续多个窗口低于同轮基线的 rank 才报告 `COMM_SLOW_WINDOW`，用于过滤单轮抖动。该检查仍只比较同一 collective 内的设备时钟速率，不需要跨节点时钟同步。
 
-completion 记录中的 `send_rank`、`recv_rank`、`channel_base` 现在会进一步聚合为 `topology_groups`。每条边包含 send/recv 总量、持续时间和边级速率；当每条 completion 都带有 peer/channel 字段时，结果会标记 `topology_ready=true`。这一步提供了 Ring/Tree 分层比较的输入，但尚未根据 Tree 层级或 Ring 对称性做最终异常判定。
+completion 记录中的 `send_rank`、`recv_rank`、`channel_base` 会进一步聚合为 `topology_groups`。每条边包含 send/recv 总量、持续时间和边级速率；当每条 completion 都带有 peer/channel 字段时，结果会标记 `topology_ready=true`。Ring/Tree 判定使用 RCCL 实际邻接和层级字段，`topology_groups` 作为边级证据保留。
 
 当前已加入拓扑判定：RCCL 的算法枚举按源码定义处理（`Tree=0`、`Ring=1`）。Ring 直接使用 completion 输出的 `ring_prev/ring_next`，按 channel 检查每个 rank 的互为前后继关系和收发速率，输出 `RING_SYMMETRIC` 或 `RING_ASYMMETRY`；缺少 Ring 邻接字段时输出 `RING_TOPOLOGY_PENDING`。Tree 直接使用 RCCL channel 的 `tree_up/tree_down0..2/tree_depth`，按 channel 和真实 depth 比较同层 rank 的推进速率，输出 `TREE_SYMMETRIC` 或 `TREE_ASYMMETRY`；缺少任一字段时输出 `TREE_LEVEL_PENDING`。当前仍需真实多节点 Tree 回归，确认不同 collective/protocol 路径的字段覆盖。
