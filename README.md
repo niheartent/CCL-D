@@ -1,6 +1,6 @@
 # CCL-D：RCCL 集合通信诊断扩展
 
-CCL-D 将 RCCL 集合通信中的 **hang、slow、参数不一致和拓扑推进异常** 转成可追踪证据：`comm_id + counter/trace_id + rank + 状态 + 证据`。它适用于当前 DTK 26.04 / `gfx936` 环境，支持单节点和已验证的双节点 8 rank 运行。
+CCL-D 将 RCCL 集合通信中的 **hang、slow、参数不一致和拓扑推进异常** 转成可追踪证据：`comm_id + counter/trace_id + rank + 状态 + 证据`。当前仓库是基于所提供材料的部分复现：数据面和基础 monitor 路径已有验证，材料级 LRU/callback 生命周期仍待实现和验收。
 
 ## Requirements
 
@@ -13,7 +13,7 @@ CCL-D 将 RCCL 集合通信中的 **hang、slow、参数不一致和拓扑推进
 | DTK/HIP | `/opt/dtk-26.04`；`hipcc` 使用 dcc 25.10.0、Clang 17.0.0 |
 | RCCL 安装 | 独立前缀 `/workspace/CCL-D/ccld-artifacts/sample-probe-install`，不覆盖系统 RCCL |
 | MPI | Open MPI 5.0.3，入口 `/opt/mpi/bin/mpirun`、编译器 `/opt/mpi/bin/mpicxx` |
-| UCX | `/opt/ucx-1.16.0`，运行时必须优先使用 `/opt/ucx-1.16.0/lib`；系统 `/opt/ucx` 保留作旧版本 |
+| UCX | 当前默认 `ucx_info` 为 1.15.0（`/opt/ucx`）；`/opt/ucx-1.16.0` 目录存在但尚未作为本轮默认运行时完成双节点验收 |
 | 操作系统/内核 | Linux x86_64；已验证节点为 HPDPS-6/7，内核 5.15.0-25-generic |
 | 双节点布局 | HPDPS-6 (`10.18.91.6`) 与 HPDPS-7 (`10.18.91.7`)，SSH 端口 `2234`，每节点 4 rank，共 8 rank |
 | 共享存储 | 两节点共享 `/workspace`，无需复制源码、RCCL 安装和测试程序 |
@@ -24,7 +24,7 @@ CCL-D 将 RCCL 集合通信中的 **hang、slow、参数不一致和拓扑推进
 cd /workspace/CCL-D
 source /opt/dtk-26.04/env.sh
 export RCCL_PREFIX=$PWD/ccld-artifacts/sample-probe-install
-export UCX_PREFIX=/opt/ucx-1.16.0
+export UCX_PREFIX=/opt/ucx-1.16.0  # 仅在单独验证该前缀时设置
 export LD_LIBRARY_PATH=$RCCL_PREFIX/lib:$UCX_PREFIX/lib:/opt/hyhal/lib:/opt/dtk/lib:/opt/dtk/hip/lib:/opt/mpi/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 ```
 
@@ -140,4 +140,4 @@ tools/tests/run_ccld_runtime_smoke.sh \
   /workspace/CCL-D/rccl-artifacts/dtk-26.04-gfx936/build/test/rccl-UnitTests
 ```
 
-当前 Python 单元测试以实际运行结果为准（最近一次 34 项通过）。构建、安装和实验结果统一保存在 `ccld-artifacts/`；源码目录中的修改不会覆盖已有独立安装产物。
+当前 Python 单元测试以实际运行结果为准（最近一次 39 项通过）。构建、安装和实验结果统一保存在 `ccld-artifacts/`；源码目录中的修改不会覆盖已有独立安装产物。

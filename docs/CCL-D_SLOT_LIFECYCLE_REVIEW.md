@@ -39,7 +39,7 @@
 | 生命周期 | state 0/1/2，诊断线程轮询清理 | kernel 结束 callback + 诊断线程回收 | host 消费慢时可能丢记录 |
 | 多 work batch | 入口读取一个 work 的字段 | 一个用户操作统一 TraceID，body 按 channel 累加 | P2P/AllToAll 容易出现错误关联 |
 | AllToAll | API 展开为多组 P2P，日志难区分父操作 | 内部 work 继承父操作 TraceID | 只能看到 P2P，难还原 AllToAll 语义 |
-| 采样周期 | 当前默认 10 ms | 材料默认约 200 μs 级周期 | slow 检测灵敏度和开销口径不同 |
+| 采样周期 | 当前默认 10 ms | 材料正文默认约 200 微秒；示例说明 1 ms 精度 | slow 检测灵敏度和开销口径必须实测，不能直接选一个数字当验收值 |
 | 协议计数 | 统一宏路径累加 | LL send/recv 与 Simple 的计数点不同 | 可能产生协议级偏差 |
 | 丢失记录 | 已加入 dropped_batches | 应有显式资源/观测丢失状态 | 不能把诊断丢失当通信 hang |
 
@@ -97,6 +97,6 @@ KERNEL_ABORTED
 4. LRU 回收和 slot 忙时的状态转移；
 5. `MISSING_COMPLETION`、`OBSERVATION_DROPPED`、`RESOURCE_EXHAUSTED` 的 monitor 优先级；
 6. Ring/Tree/协议计数的比较分组；
-7. 200 μs、1 ms、10 ms 采样周期下的检测延迟和开销。
+7. 材料中的约 200 微秒默认、示例 1 ms 精度和当前 10 ms 实现之间的检测延迟与开销对照。
 
 只有上述状态机和字段设计通过合成日志单测，才重新编译 RCCL。扩大 `CCLD_DIAG_SLOTS` 只能作为容量参数实验，不能替代 LRU 分配、TraceID 继承和 callback 回收。

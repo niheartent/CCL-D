@@ -1,100 +1,59 @@
-# CCL-D 复现状态总览
+# CCL-D 状态总览
 
-本项目目标是复现所提供 CCL-D 材料中的集合通信 slow/hang 诊断能力。CCL-D 是脱敏实现分支，不能把 CCL-D 论文已有内容等同于 CCL-D 全部功能。
+本文只记录已验证事实、材料明确要求和当前未验证缺口。没有实测或没有在设计材料中明确的内容，不标记为完成。
 
-## 实验方案
+## 已验证事实
 
-完整的场景、指标、验收门槛和执行顺序见 [`docs/CCL-D_TEST_PLAN.md`](CCL-D_TEST_PLAN.md)。当前只固化测试设计，待新版通信库和核心功能完成后按阶段执行。
-
-## 已完成并实测
-
-| 能力 | 状态 | 证据 |
+| 项目 | 状态 | 证据 |
 |---|---|---|
-| gfx936 独立 RCCL/CCL-D 安装 | 完成 | ccld-artifacts/sample-probe-install |
-| 双节点共享存储和 SSH | 完成 | HPDPS-6/7，SSH 2234 |
-| UCX 独立升级 | 完成 | 两节点 /opt/ucx-1.16.0，旧版保留 |
-| MPI 双节点通信 | 完成 | 2 rank、8 rank AllReduce |
-| RCCL/CCL-D 8 rank | 完成 | 每节点 4 rank，结果 36 |
-| 多轮通信 | 基础完成 | 20 轮、4096 元素通过 |
-| AllGather/ReduceScatter/Broadcast/AllToAll/P2P slot 回归 | 覆盖程序就绪，待新版库验证 | 源码含五类数据面结果校验；P2P batch 元数据修正正在编译，需新库双节点实测后确认 slot 与 monitor |
-| 正常 monitor | 完成 | exit 0 |
-| 远端 rank 故障检测 | 基础完成 | rank 7 第 10 轮可检出 |
-| Python analyzer 单测 | 完成 | 最近一次 38 项通过；新增 P2P/Broadcast/AllToAll 语义规则 |
+| gfx936 独立 RCCL 构建目录 | 已完成 | `ccld-artifacts/sample-probe-build` |
+| gfx936 独立 RCCL 安装前缀 | 已完成上一版安装 | `ccld-artifacts/sample-probe-install`；最近增量构建曾完成但未在 slot 生命周期修正后重新安装 |
+| 双节点 SSH/共享存储 | 已完成 | HPDPS-6/7、SSH 2234、共享 `/workspace` |
+| UCX/MPI 双节点启动 | 已验证基础路径 | Open MPI 5.0.3，双节点 8 rank 启动成功 |
+| 五类数据面回归 | 已验证 | AllGather、ReduceScatter、Broadcast、AllToAll、P2P 数据结果通过 |
+| 8 rank、20 轮、count 4096 | 数据面通过 | `slot_regression PASS` |
+| Python analyzer/monitor 单测 | 已完成 | 最近一次 39 项通过 |
+| 参数/缺失 rank 合成注入 | 已验证 | `MISMATCH`、`MISSING_RANK` |
+| slow/stall/missing completion 合成日志 | 已验证分析器路径 | 不等价于真实 GPU/网络故障 |
 
-## CCL-D 能力对照
+## 设计材料明确要求但当前没有完成的部分
 
-当前 monitor 已增加算子契约分析层：P2P 对端配对、Broadcast root 角色、AllToAll shape，以及 AllGather/ReduceScatter/AllReduce 的基础形状一致性。
-
-
-| CCL-D 目标 | 当前状态 | 差距 |
+| 设计要求 | 当前状态 | 不能默认完成的原因 |
 |---|---|---|
-| commId、counter、Trace ID | 基础完成 | Host enqueue 与 Device completion 均使用 RCCL canonical opCount；仍需多 collective group 与长时间双节点回归 |
-| host collective 开始记录 | 基础完成 | 已记录 op、count、bytes、datatype、root、rank、节点、时间 |
-| kernel 开始和结束 | 第一版完成 | ncclCcldDiag 已记录 start/end、state、channel、opCount |
-| 每 channel send/recv 总数 | 第一版完成 | device 累计，host 读取 |
-| pinned memory 诊断通道 | 第一版完成 | 还没有完整 LRU trace slot 管理 |
-| 诊断线程生命周期 | 部分完成 | 当前轮询 complete，未实现完整 callback/slot 回收模型 |
-| kernel 速率离群检查 | 部分完成 | completion start/end 与 send/recv 总数可计算 rank 速率并输出 COMM_SLOW；新增可选连续窗口 COMM_SLOW_WINDOW |
-| sendRate/recvRate 周期采样 | 第一版完成 | 诊断线程按 `RCCL_CCLD_SAMPLE_MS` 读取 pinned 计数并输出 `phase=sample`，同时记录 `send_delta/recv_delta`、窗口时长、B/s 速率和 counter 回退标记；分析器可按同节点对照 rank 检出 `COMM_STALLED`，仍需按 protocol 精确计数和长期资源回收 |
-| Ring 横向比较 | 基础完成 | completion 输出 `ring_prev/ring_next`，分析器按 channel 校验环的互为前后继关系和速率；缺字段时明确输出 `RING_TOPOLOGY_PENDING` |
-| Tree 同层比较 | 基础完成 | completion 输出 `tree_up/tree_down0..2/tree_depth`，分析器按真实 channel/depth 比较同层推进速率；仍需真实多节点 Tree 回归 |
-| peer/edge 拓扑字段 | 第一版完成 | 每 channel 16 个 batch slot，completion 按 batch 独立输出；20 轮 8 rank 复测无 peer/protocol 不一致、无 slot 丢弃、无 peer overflow |
-| 算法和协议一致性 | 第一版完成 | completion 输出算法、协议及 Simple/LL/LL128 分协议 send/recv 计数；per-batch slot 后协议×peer 总量与协议总计数一致，待更多算法路径覆盖 |
-| 计算慢识别 | 未完成 | 没有计算阶段与 collective 开始边界分析 |
-| kernel/通信推进慢识别 | 部分完成 | 单轮 COMM_SLOW 与连续窗口 COMM_SLOW_WINDOW 已实现；真实 GPU/网络慢和拓扑分层仍未完成 |
-| 未进入 collective 检测 | 基础完成 | enqueue 缺失可报 MISSING_RANK |
-| 参数不一致检测 | 完成 | op/count/bytes/datatype/root |
-| kernel 未完成检测 | 基础完成 | completion 缺失可报 MISSING_COMPLETION |
-| 真实 GPU hang/abort | 未完成 | 当前是诊断侧注入和合成日志 |
-| 真实网络故障 | 未完成 | 尚无 IB 隔离和 NET 错误实验 |
-| 多 communicator 隔离 | 未完成验证 | 没有并发多 communicator 回归 |
-| stream/graph/CollNet/NVLS/MSCCL | 未完成验证 | 没有测试矩阵 |
-| 性能开销评估 | 未完成 | 没有训练 workload 和 CPU/pinned/GPU 对照 |
+| `commId + counter + 扩展位` 作为操作级 TraceID | 部分实现 | 当前 host/device 使用 RCCL canonical opCount，但还没有完整操作级 LRU record |
+| `kernelIndex` LRU 物理索引 | 未实现 | 当前代码使用 `channel × (opCount % CCLD_DIAG_SLOTS)`，这不是材料中的 LRU 模型 |
+| pinned memory body 按操作/channel 保存计数 | 部分实现 | 有 pinned 诊断区域和 channel 计数，但没有材料规定的 body 分配、占用和回收协议 |
+| diagnostic thread 周期采样 | 部分实现 | 有轮询 sample，当前默认 10 ms；材料正文给出默认约 200 微秒，示例又使用 1 ms 精度，必须通过实测确定本实现的有效口径 |
+| kernel host callback 通知结束 | 未验证 | 当前主要依赖诊断线程轮询 complete，尚未证明 callback/回收链路符合设计 |
+| 多 work/batch 归属同一操作 TraceID | 未完成 | 当前 kernel 侧不能证明 batch 内所有 work 都正确归入同一操作记录 |
+| AllToAll 保留父操作身份 | 未完成 | RCCL 当前路径展开为 P2P Send/Recv，尚未记录 parent operation |
+| Simple/LL/LL128 精确计数点 | 未完成 | 材料要求不同 primitive 位置，当前统一计数宏尚未逐路径对照验证 |
+| Ring 全局比较 | 部分实现 | 规则已写入 analyzer，但真实数据完整性和长期回归未完成 |
+| Tree 同层比较 | 部分实现 | 规则已写入 analyzer，但真实多节点 Tree 回归未完成 |
+| 决策树根因归类 | 部分实现 | 目前是规则集合，不是材料中的完整 slow/hang 决策树 |
+| 真实训练 slow/hang | 未完成 | 当前主要是诊断记录注入和合成日志 |
+| 性能、CPU、pinned memory、GPU 开销 | 未完成 | 没有按材料口径完成对照实验 |
 
-## 故障测试边界
+## 当前明确问题
 
-真实 RCCL/CCL-D 记录矩阵已验证：op_mismatch 和 size_mismatch 报 MISMATCH，skip_record 和 missing_rank 报 MISSING_RANK。
+上一轮五算子数据面回归中观察到诊断记录丢失。随后加入了 `dropped_batches` 记录，但这只能把观测丢失显式化，不能证明生命周期正确。问题根因尚未完成材料级修复：当前实现仍把物理 slot 和操作身份混用，且没有完成 `kernelIndex` LRU、callback 回收和多 work 归属。
 
-容器内合成 completion 矩阵已验证：stall 报 MISSING_COMPLETION，slow 报 COMM_SLOW 并定位 slow rank，missing completion 报 MISSING_COMPLETION。它们验证插桩、日志聚合和 monitor 决策，不能等价于真实 GPU kernel hang、驱动错误或 IB 链路中断。
+因此，当前不能把 `dropped_batches=0`、扩大 slot 数量或一次回归 PASS 当作完整诊断实现的证明。
 
-## 对齐设计目标的剩余工作
+## 当前完成度口径
 
-按论文设计的完整验收口径，当前已完成的是 Trace/enqueue/completion/monitor 主链路和基础 Ring/Tree 结构分析，约占整体目标的一半以上。剩余工作集中在四类：
+不再用单一百分比表示完成度。按材料验收分层：
 
-1. **高精度采样**：已完成第一版 pinned buffer 周期读取、sample JSONL 和同节点停滞判定；后续实现 trace slot/LRU 生命周期、协议级计数的跨 rank 一致性校验，以及 Simple、LL、LL128 的真实路径覆盖。
-2. **决策树**：把未进入、参数不一致、kernel 未完成、计算慢、通信推进慢和拓扑失衡统一成带证据的根因结论。
-3. **覆盖矩阵**：在两节点 8 rank 上覆盖 Ring/Tree、AllReduce/AllGather/ReduceScatter/Broadcast、多 communicator、stream 和长时间压力；再补 Graph、CollNet、NVLS、MSCCL 路径。
-4. **真实故障与开销评估**：补充可控的进程退出、通信线程停滞、UCX/网络路径异常实验，并测量关闭/开启诊断时的吞吐、端到端时间、CPU、pinned memory 和日志量。
+- **数据面回归层**：五类算子已通过一次 8 rank、20 轮正确性测试。
+- **诊断记录层**：有 host enqueue、device completion、sample、peer/channel 字段，但操作级 LRU 生命周期未完成。
+- **分析器层**：已有基础参数、缺失、速率、P2P 边和 Ring/Tree 规则，但不是完整决策树。
+- **论文级验收层**：未完成，尤其缺 LRU/callback、多 work 归属、协议精确计数、训练任务和性能数据。
 
-当前的 `COMM_SLOW`、`COMM_SLOW_WINDOW` 和合成 stall/slow 注入用于验证诊断链路；它们还不能替代真实 GPU kernel hang、驱动错误或网络中断实验。
+## 下一步必须先完成的验证
 
-## 剩余工作量估算
-
-这里的比例按“完整诊断系统验收”估算，不按代码行数计算：
-
-| 维度 | 当前完成 | 距离完整目标 | 主要缺口 |
-|---|---:|---:|---|
-| 通信库插桩与 Trace 主链路 | 约 70% | 约 30% | trace slot/LRU、稳定生命周期、多 communicator/并发场景 |
-| 分布式 rank 指标探针 | 约 50% | 约 50% | trace slot/LRU、协议级精确计数、资源回收和长稳 |
-| 集中式决策分析器 | 约 45% | 约 55% | 统一根因决策树、计算慢与通信慢区分、证据链和置信度 |
-| 主机流量识别与采集 | 约 40% | 约 60% | peer/edge 多 batch 稳定聚合、网络路径异常、跨节点时序校准 |
-| Ring/Tree 拓扑分析 | 约 45% | 约 55% | 多 collective/protocol 的真实覆盖、CollNet/NVLS/MSCCL 路径 |
-| 故障注入与验证 | 约 45% | 约 55% | 真实进程退出、kernel 超时、UCX/IB 异常、清理与超时治理 |
-| 性能与长稳验收 | 约 15% | 约 85% | 1k/10k 轮、30 分钟、训练 workload、P50/P95/P99 开销 |
-
-按上述权重，当前约完成完整目标的 **50%～60%**。新增的周期采样已经把探针从“完成后读取”推进到“运行中观测”，但仍需协议级计数、统一根因归因、真实故障边界和性能/长稳数据，才能称为完整实现。
-
-## 结论
-
-当前是 CCL-D 诊断链路的第一版可运行复现，已具备 Trace/enqueue/completion/monitor 骨架和基础故障检测；还不是完整 CCL-D。CCL-D 已增加基于 completion start/end 和 send/recv 总数的第一版 COMM_SLOW 速率离群检查，并可基于 RCCL 实际 Ring/Tree 拓扑做结构和同层速率比较；周期 send/recv 采样、根因决策树和真实 slow/hang 故障实验仍未完成。
-
-## 下一阶段验收顺序
-
-1. 完成 op_count 与 enqueue/device completion 的统一 Trace 关联，重建独立 RCCL 并完成 8 rank 回归。
-2. 增加诊断线程周期采样，输出每 channel 的 sendRate、recvRate、窗口和停滞状态。
-3. 导出 peer/edge、Ring/Tree 层级信息，建立 Ring 全局比较和 Tree 同层比较。
-4. 扩展多 collective、stream、communicator、Graph、CollNet、NVLS、MSCCL 测试。
-5. 增加计算慢、kernel 延迟、进程退出、网络隔离等可控真实故障实验。
-6. 用训练 workload 评估吞吐、端到端时间、CPU、pinned memory 和 GPU 开销。
-
-每项必须提交代码、单元测试、双节点实测日志和状态更新，不能只增加文档或合成日志。
+1. 只读核对材料与 RCCL 源码，画出 host enqueue、plan、work batch、kernel、callback、diagnostic thread 的实际生命周期。
+2. 在不编译的情况下，用合成记录验证 `TraceID`、`kernelIndex`、body/channel、回收状态机。
+3. 明确 AllToAll/P2P parent operation 和多 work batch 归属字段。
+4. 明确 Simple/LL/LL128 的真实计数插入点。
+5. 通过状态机单测后，才重新修改并编译 RCCL。
+6. 新库安装后重新跑干净目录的五算子回归，再测 100/1000 轮和长稳。
