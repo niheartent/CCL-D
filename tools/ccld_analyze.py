@@ -138,6 +138,92 @@ def analyze(records, *, now_ns=None, timeout_ms=2000, slow_skew_ms=2):
         results.append(result)
     return results
 
+def analyze_operation_semantics(records):
+    """Apply operation-specific contracts to enqueue and completion evidence.
+
+    The generic analyzer checks that ranks entered the same operation.  This
+    layer checks the communication contract: P2P edges are reciprocal,
+    Broadcast has one root, and AllToAll has a complete rank-to-rank matrix.
+    It intentionally consumes existing enqueue fields, so changing these
+    rules does not require rebuilding RCCL.
+    """
+    enqueues = [r for r in records if r.get("phase") == "enqueue"]
+    groups = defaultdict(list)
+    for row in enqueues:
+        key = (str(row.get("comm_id", "unknown")),
+               str(row.get("counter", row.get("trace_id", "unknown"))))
+        groups[key].append(row)
+    results = []
+    for (comm_id, counter), rows in sorted(groups.items()):
+        ops = sorted({str(r.get("op", "")) for r in rows})
+        if not ops:
+            continue
+        op = ops[0] if len(ops) == 1 else "MIXED"
+        expected = max((int(r.get("nranks", 1)) for r in rows), default=1)
+        status = "OK"
+        evidence = {"op": op, "records": len(rows)}
+        if op in ("Send", "Recv") or (op == "MIXED" and set(ops) <= {"Send", "Recv"}):
+            sends = {(int(r.get("rank", -1)), int(r.get("root", -1))): r
+                     for r in rows if str(r.get("op")) == "Send"}
+            recvs = {(int(r.get("rank", -1)), int(r.get("root", -1))): r
+                     for r in rows if str(r.get("op")) == "Recv"}
+            missing_send = sorted((rank, peer) for (rank, peer) in sends
+                                  if (peer, rank) not in recvs)
+            missing_recv = sorted((rank, peer) for (rank, peer) in recvs
+                                  if (peer, rank) not in sends)
+            edge_mismatch = []
+            for (rank, peer), send in sends.items():
+                recv = recvs.get((peer, rank))
+                if recv is not None:
+                    fields = ("count", "bytes", "datatype")
+                    diff = {f: [send.get(f), recv.get(f)] for f in fields
+                            if str(send.get(f)) != str(recv.get(f))}
+                    if diff:
+                        edge_mismatch.append({"send": [rank, peer], "recv": [peer, rank],
+                                              "fields": diff})
+            if missing_send or missing_recv:
+                status = "P2P_PEER_MISSING"
+            elif edge_mismatch:
+                status = "P2P_TRANSFER_MISMATCH"
+            evidence.update({"missing_send_edges": missing_send,
+                             "missing_recv_edges": missing_recv,
+                             "edge_mismatches": edge_mismatch})
+        elif op == "Broadcast":
+            roots = sorted({int(r.get("root", -1)) for r in rows})
+            invalid = [root for root in roots if root < 0 or root >= expected]
+            if len(roots) != 1 or invalid or len({int(r.get("rank", -1)) for r in rows}) != expected:
+                status = "BROADCAST_ROLE_MISMATCH"
+            evidence.update({"roots": roots, "invalid_roots": invalid,
+                             "expected_root": roots[0] if len(roots) == 1 else None})
+        elif op == "AllToAll":
+            ranks = {int(r.get("rank", -1)) for r in rows}
+            if ranks != set(range(expected)):
+                status = "ALLTOALL_RANK_MISSING"
+            shapes = {(str(r.get("count")), str(r.get("bytes")), str(r.get("datatype"))) for r in rows}
+            if len(shapes) > 1:
+                status = "ALLTOALL_SHAPE_MISMATCH"
+            evidence.update({"ranks": sorted(ranks), "shape_variants": sorted(shapes)})
+        elif op in ("AllGather", "ReduceScatter", "AllReduce"):
+            shapes = {(str(r.get("count")), str(r.get("bytes")), str(r.get("datatype"))) for r in rows}
+            if len(shapes) > 1:
+                status = "COLLECTIVE_SHAPE_MISMATCH"
+            evidence["shape_variants"] = sorted(shapes)
+        result = {"comm_id": comm_id, "counter": counter,
+                  "status": status, "operation": op, "evidence": evidence}
+        result.update(_root_cause("MISMATCH" if status != "OK" else "OK",
+                                  ranks=sorted({int(r.get("rank", -1)) for r in rows}),
+                                  mismatches=evidence))
+        if status != "OK":
+            result["root_cause"] = {"P2P_PEER_MISSING": "P2P_PEER_RELATION_MISMATCH",
+                                     "P2P_TRANSFER_MISMATCH": "P2P_TRANSFER_SIZE_MISMATCH",
+                                     "BROADCAST_ROLE_MISMATCH": "BROADCAST_ROOT_MISMATCH",
+                                     "ALLTOALL_RANK_MISSING": "ALLTOALL_RANK_SET_MISMATCH",
+                                     "ALLTOALL_SHAPE_MISMATCH": "ALLTOALL_SHAPE_MISMATCH",
+                                     "COLLECTIVE_SHAPE_MISMATCH": "COLLECTIVE_SHAPE_MISMATCH"}[status]
+            result["confidence"] = "high"
+        results.append(result)
+    return results
+
 def analyze_completions(records, *, slow_rate_ratio=0.5):
     """Aggregate completion records and detect missing completion/count/rate outliers.
 

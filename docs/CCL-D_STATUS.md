@@ -19,9 +19,12 @@
 | AllGather/ReduceScatter/Broadcast/AllToAll/P2P slot 回归 | 覆盖程序就绪，待新版库验证 | 源码含五类数据面结果校验；P2P batch 元数据修正正在编译，需新库双节点实测后确认 slot 与 monitor |
 | 正常 monitor | 完成 | exit 0 |
 | 远端 rank 故障检测 | 基础完成 | rank 7 第 10 轮可检出 |
-| Python analyzer 单测 | 完成 | 最近一次 34 项通过 |
+| Python analyzer 单测 | 完成 | 最近一次 38 项通过；新增 P2P/Broadcast/AllToAll 语义规则 |
 
 ## CCL-D 能力对照
+
+当前 monitor 已增加算子契约分析层：P2P 对端配对、Broadcast root 角色、AllToAll shape，以及 AllGather/ReduceScatter/AllReduce 的基础形状一致性。
+
 
 | CCL-D 目标 | 当前状态 | 差距 |
 |---|---|---|

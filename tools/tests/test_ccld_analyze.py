@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ccld_analyze import (analyze, analyze_completions,
                           analyze_completion_windows, analyze_progress_samples,
-                          load_records)
+                          analyze_operation_semantics, load_records)
 
 
 def record(rank, *, op="AllReduce", byte_count=4096, ts=1_000_000_000,
@@ -20,6 +20,32 @@ def record(rank, *, op="AllReduce", byte_count=4096, ts=1_000_000_000,
 
 
 class CcldAnalyzeTest(unittest.TestCase):
+    def test_p2p_edges_are_checked_reciprocally(self):
+        rows = [record(0, op="Send"), record(1, op="Recv")]
+        rows[0]["root"] = rows[1]["root"] = 1
+        rows[1]["rank"] = 1
+        result = analyze_operation_semantics(rows)[0]
+        self.assertEqual(result["status"], "P2P_PEER_MISSING")
+
+    def test_p2p_reciprocal_send_recv_is_clean(self):
+        rows = [record(0, op="Send"), record(1, op="Recv")]
+        rows[0]["root"] = 1
+        rows[1]["root"] = 0
+        result = analyze_operation_semantics(rows)[0]
+        self.assertEqual(result["status"], "OK")
+
+    def test_broadcast_root_role_is_checked(self):
+        rows = [record(0, op="Broadcast"), record(1, op="Broadcast")]
+        rows[0]["root"] = 0
+        rows[1]["root"] = 1
+        result = analyze_operation_semantics(rows)[0]
+        self.assertEqual(result["status"], "BROADCAST_ROLE_MISMATCH")
+
+    def test_alltoall_shape_is_checked(self):
+        rows = [record(0, op="AllToAll"), record(1, op="AllToAll", byte_count=2048)]
+        result = analyze_operation_semantics(rows)[0]
+        self.assertEqual(result["status"], "ALLTOALL_SHAPE_MISMATCH")
+
     def test_consistent_two_rank_collective(self):
         result = analyze([record(0), record(1)], now_ns=1_000_000_001)[0]
         self.assertEqual(result["status"], "OK")

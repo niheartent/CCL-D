@@ -61,6 +61,23 @@ peer 采集使用每 channel 的有限槽位；记录中必须包含 peer 槽溢
 
 在合成故障通过后，执行 AllReduce、AllGather、ReduceScatter、Broadcast、AllToAll、Ring、Tree、多 communicator、多 stream 和 20～1000 轮压力测试。检查每条路径的 enqueue、sample、completion、算法、协议、channel、拓扑字段，以及计数器回退、slot 泄漏、日志截断和 monitor 超时治理。
 
+### Monitor 语义分层与实验设计
+
+monitor 采用“通用完整性检查 + 算子契约检查 + 拓扑检查”三层结构。通用层只负责 `comm_id/counter` 分组、rank 是否齐全、completion 是否完成、计数器是否回退；算子层按通信契约解释同一批记录，避免用一条规则误判不同 collective。
+
+| 分析器 | 适用操作 | 核心契约 | 故障注入/验收 |
+|---|---|---|---|
+| P2P edge analyzer | Send/Recv | Send(A→B) 必须有 Recv(B←A)，count/bytes/datatype 对齐 | 删除对端 Recv → `P2P_PEER_MISSING`；改变 count → `P2P_TRANSFER_MISMATCH` |
+| Broadcast role analyzer | Broadcast | 所有 rank 的 root 相同且在 `[0,nranks)` | 改一个 root → `BROADCAST_ROLE_MISMATCH` |
+| AllToAll shape/edge analyzer | AllToAll | 所有 rank 的 count/datatype 一致；completion 的 peer 矩阵应互为转置 | 改一个 rank 的 count → `ALLTOALL_SHAPE_MISMATCH`；删一条边 → edge mismatch |
+| Gather/scatter shape analyzer | AllGather/ReduceScatter | 输入/输出规模按 nranks 成比例，datatype 一致；ReduceScatter 的归约参数一致 | 改 count/datatype → `COLLECTIVE_SHAPE_MISMATCH` |
+| Reduction analyzer | AllReduce/ReduceScatter | reduction op、datatype、count 一致；不比较 root | 改 reduction 参数 → 参数不一致 |
+| Topology analyzer | Ring/Tree | Ring 前后继互反；Tree 按 depth 分层比较 | 改 topology peer/depth → `RING_ASYMMETRY`/`TREE_ASYMMETRY` |
+
+实验顺序固定为：正常样本 -> 单字段参数错误 -> 缺失 rank/缺失边 -> completion 未完成 -> 单 rank slow/stall -> peer/channel 计数错误 -> 长窗口回归。每个故障只改一个证据字段，并检查状态、`root_cause`、首错 rank、证据字段和 monitor 退出码；正常样本要求无误报。
+
+当前 Python analyzer 已加入上述 P2P、Broadcast、AllToAll 和基础集合形状规则，使用合成 JSONL 做确定性单测；这些规则不改变 RCCL ABI，因此不需要等待本轮 RCCL 编译完成后再开发。真实五算子双节点回归仍需使用新安装库验证。
+
 ### Slot 回归实现经验
 
 - **以 batch 为粒度记录**：一个 channel/kernel batch 内可能有多个 work item；slot 不能只在 kernel 入口初始化一次。每个 work batch 都应从自己的 work 元数据取 `opCount`、算法和协议，并独立提交 completion。
