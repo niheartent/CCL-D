@@ -63,6 +63,9 @@ class RecordPool {
     slot.view.completedChannels = 0;
     slot.view.state = RecordState::Reserved;
     slot.channelDone.assign(channels, false);
+    slot.channelRegistered.assign(channels, false);
+    slot.expectedPlans = 0;
+    slot.completedPlans = 0;
     slot.lastUse = ++clock_;
     *kernelIndex = static_cast<uint32_t>(selected);
     return ReserveResult::Reserved;
@@ -79,6 +82,39 @@ class RecordPool {
     slot->channelDone[channel] = true;
     ++slot->view.completedChannels;
     return true;
+  }
+
+  bool registerChannel(uint32_t index, uint32_t channel) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Slot* slot = get(index);
+    if (!slot || (slot->view.state != RecordState::Reserved && slot->view.state != RecordState::Running)) return false;
+    if (channel >= slot->channelDone.size()) {
+      slot->channelDone.resize(channel + 1, false);
+      slot->channelRegistered.resize(channel + 1, false);
+    }
+    if (!slot->channelRegistered[channel]) {
+      slot->channelRegistered[channel] = true;
+      ++slot->view.expectedChannels;
+    }
+    return true;
+  }
+
+  bool expectPlan(uint32_t index) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Slot* slot = get(index);
+    if (!slot || (slot->view.state != RecordState::Reserved && slot->view.state != RecordState::Running)) return false;
+    ++slot->expectedPlans;
+    return true;
+  }
+
+  bool completePlan(uint32_t index) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Slot* slot = get(index);
+    if (!slot || (slot->view.state != RecordState::Running && slot->view.state != RecordState::Reserved) ||
+        slot->completedPlans >= slot->expectedPlans || slot->expectedPlans == 0) return false;
+    ++slot->completedPlans;
+    if (slot->completedPlans == slot->expectedPlans) slot->view.state = RecordState::Complete;
+    return slot->view.state == RecordState::Complete;
   }
 
   bool markPlanComplete(uint32_t index) {
@@ -114,6 +150,9 @@ class RecordPool {
     slot->view.expectedChannels = 0;
     slot->view.completedChannels = 0;
     slot->channelDone.clear();
+    slot->channelRegistered.clear();
+    slot->expectedPlans = 0;
+    slot->completedPlans = 0;
     slot->lastUse = ++clock_;
     return true;
   }
@@ -133,7 +172,10 @@ class RecordPool {
   struct Slot {
     RecordView view;
     std::vector<bool> channelDone;
+    std::vector<bool> channelRegistered;
     uint64_t lastUse = 0;
+    uint32_t expectedPlans = 0;
+    uint32_t completedPlans = 0;
   };
 
   Slot* get(uint32_t index) {
