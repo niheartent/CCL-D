@@ -47,6 +47,7 @@
   #define CCLD_DIAG_RESET() do { \
     if (threadIdx.x == 0 && ncclShmem.ccldDiagActive) { \
       struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR; \
+      __atomic_store_n(&ccld->droppedBatches, 0ULL, __ATOMIC_RELAXED); \
       __atomic_store_n(&ncclShmem.collTraceTail->diag.sendCount, 0ULL, __ATOMIC_RELAXED); \
       __atomic_store_n(&ncclShmem.collTraceTail->diag.recvCount, 0ULL, __ATOMIC_RELAXED); \
       for (int proto = 0; proto < 3; ++proto) { \
@@ -638,6 +639,7 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
         ccld->sendCount = 0; ccld->recvCount = 0; ccld->startTimestamp = wall_clock64();
         __atomic_store_n(&ccld->state, 1u, __ATOMIC_RELEASE);
       } else {
+        __atomic_fetch_add(&ccld->droppedBatches, 1ULL, __ATOMIC_RELAXED);
       }
     } else if (tid == 0) {
       ncclShmem.ccldDiagActive = 0;

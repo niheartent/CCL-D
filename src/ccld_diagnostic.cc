@@ -163,6 +163,7 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
         << ",\"trace_id\":\"" << traceId.str()
         << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
         << "\",\"counter\":" << diag->opCount
+        << ",\"dropped_batches\":" << diag->droppedBatches
         << ",\"op_count\":" << diag->opCount
         << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
         << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes

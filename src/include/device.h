@@ -419,6 +419,7 @@ static_assert(sizeof(struct ncclProf) == 256, "ncclProf must have size of 256");
 struct alignas(16) ncclCcldDiag {
 #define CCLD_MAX_PEER_SLOTS NCCL_MAX_ARITY
   uint64_t opCount;
+  uint64_t droppedBatches;
   uint64_t sendCount;
   uint64_t recvCount;
   uint64_t sendCountByProto[3];

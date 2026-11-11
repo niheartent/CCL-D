@@ -8,7 +8,8 @@ import time
 
 from ccld_analyze import (analyze, analyze_completions,
                           analyze_completion_windows, analyze_progress_samples,
-                          analyze_operation_semantics, load_records)
+                          analyze_operation_semantics, analyze_p2p_completions,
+                          load_records)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -42,6 +43,7 @@ def main():
         results = analyze(load_records(paths), timeout_ms=args.timeout_ms,
                           slow_skew_ms=args.slow_skew_ms)
         results += analyze_completions(records, slow_rate_ratio=args.slow_rate_ratio)
+        results += analyze_p2p_completions(records)
         results += analyze_operation_semantics(records)
         if args.slow_window:
             results += analyze_completion_windows(
@@ -58,7 +60,7 @@ def main():
                                  "PEER_DATA_INCONSISTENT", "P2P_PEER_MISSING",
                                  "P2P_TRANSFER_MISMATCH", "BROADCAST_ROLE_MISMATCH",
                                  "ALLTOALL_RANK_MISSING", "ALLTOALL_SHAPE_MISMATCH",
-                                 "COLLECTIVE_SHAPE_MISMATCH")
+                                 "COLLECTIVE_SHAPE_MISMATCH", "DIAGNOSTIC_BATCH_DROPPED")
             if args.strict_topology and status in ("RING_ASYMMETRY", "TREE_ASYMMETRY"):
                 anomaly = True
             if anomaly:
@@ -66,6 +68,7 @@ def main():
             if not (args.all or anomaly):
                 continue
             signature = (result["comm_id"], result["counter"], status,
+                         result.get("operation"), result.get("root_cause"),
                          tuple(result.get("missing_ranks", [])),
                          json.dumps(result.get("mismatches", {}), sort_keys=True),
                          tuple(result.get("send_counts", [])),

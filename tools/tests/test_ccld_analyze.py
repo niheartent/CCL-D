@@ -164,6 +164,14 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual(result["status"], "PEER_DATA_TRUNCATED")
         self.assertEqual(result["peer_data_truncated_ranks"], [0])
 
+    def test_diagnostic_batch_drop_is_reported(self):
+        row = {"phase": "complete", "comm_id": "abcd", "counter": 3,
+               "rank": 0, "nranks": 1, "channel": 0,
+               "send_count": 8, "recv_count": 8, "dropped_batches": 2}
+        result = analyze_completions([row])[0]
+        self.assertEqual(result["status"], "DIAGNOSTIC_BATCH_DROPPED")
+        self.assertEqual(result["diagnostic_dropped_ranks"], [0])
+
     def test_peer_protocol_total_mismatch_is_reported(self):
         row = {"phase": "complete", "comm_id": "abcd", "counter": 3,
                "rank": 0, "nranks": 1, "channel": 0,

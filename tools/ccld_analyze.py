@@ -107,7 +107,9 @@ def analyze(records, *, now_ns=None, timeout_ms=2000, slow_skew_ms=2):
         expected_ranks = list(range(expected))
         missing = sorted(set(expected_ranks) - set(ranks))
         p2p_rows = rows and all(str(row.get("op", "")) in ("Send", "Recv") for row in rows)
-        compare_fields = tuple(field for field in FIELDS if field not in (("op", "root") if p2p_rows else ()))
+        # P2P groups may legitimately contain different peers and message
+        # sizes. Their contract is checked edge-by-edge below.
+        compare_fields = ("datatype",) if p2p_rows else FIELDS
         mismatches = {field: sorted({str(row.get(field)) for row in rows})
                       for field in compare_fields if len({str(row.get(field)) for row in rows}) > 1}
         times = [int(row["timestamp_ns"]) for row in rows if row.get("timestamp_ns") is not None]
@@ -116,9 +118,9 @@ def analyze(records, *, now_ns=None, timeout_ms=2000, slow_skew_ms=2):
 
         if mismatches:
             status = "MISMATCH"
-        elif missing and age_ms >= timeout_ms:
+        elif missing and not p2p_rows and age_ms >= timeout_ms:
             status = "MISSING_RANK"
-        elif missing:
+        elif missing and not p2p_rows:
             status = "PENDING"
         elif nnodes <= 1 and skew_ms >= slow_skew_ms:
             # This is only host enqueue timing.  It is not a send/recv-rate
@@ -163,21 +165,29 @@ def analyze_operation_semantics(records):
         status = "OK"
         evidence = {"op": op, "records": len(rows)}
         if op in ("Send", "Recv") or (op == "MIXED" and set(ops) <= {"Send", "Recv"}):
-            sends = {(int(r.get("rank", -1)), int(r.get("root", -1))): r
-                     for r in rows if str(r.get("op")) == "Send"}
-            recvs = {(int(r.get("rank", -1)), int(r.get("root", -1))): r
-                     for r in rows if str(r.get("op")) == "Recv"}
+            sends = defaultdict(list)
+            recvs = defaultdict(list)
+            for r in rows:
+                key = (int(r.get("rank", -1)), int(r.get("root", -1)))
+                (sends if r.get("op") == "Send" else recvs)[key].append(r)
             missing_send = sorted((rank, peer) for (rank, peer) in sends
                                   if (peer, rank) not in recvs)
             missing_recv = sorted((rank, peer) for (rank, peer) in recvs
                                   if (peer, rank) not in sends)
             edge_mismatch = []
-            for (rank, peer), send in sends.items():
-                recv = recvs.get((peer, rank))
-                if recv is not None:
-                    fields = ("count", "bytes", "datatype")
-                    diff = {f: [send.get(f), recv.get(f)] for f in fields
-                            if str(send.get(f)) != str(recv.get(f))}
+            for (rank, peer), send_items in sends.items():
+                recv_items = recvs.get((peer, rank))
+                if recv_items is not None:
+                    send_bytes = sum(int(x.get("bytes", 0)) for x in send_items)
+                    recv_bytes = sum(int(x.get("bytes", 0)) for x in recv_items)
+                    send_count = sum(int(x.get("count", 0)) for x in send_items)
+                    recv_count = sum(int(x.get("count", 0)) for x in recv_items)
+                    send_types = sorted({str(x.get("datatype")) for x in send_items})
+                    recv_types = sorted({str(x.get("datatype")) for x in recv_items})
+                    diff = {}
+                    if send_bytes != recv_bytes: diff["bytes"] = [send_bytes, recv_bytes]
+                    if send_count != recv_count: diff["count"] = [send_count, recv_count]
+                    if send_types != recv_types: diff["datatype"] = [send_types, recv_types]
                     if diff:
                         edge_mismatch.append({"send": [rank, peer], "recv": [peer, rank],
                                               "fields": diff})
@@ -208,11 +218,18 @@ def analyze_operation_semantics(records):
             if len(shapes) > 1:
                 status = "COLLECTIVE_SHAPE_MISMATCH"
             evidence["shape_variants"] = sorted(shapes)
+        if op == "MIXED" and set(ops) <= {"Send", "Recv"}:
+            op = "P2P"
+            evidence["communication_pattern"] = (
+                "all-to-all-like" if len({(int(r.get("rank", -1)), int(r.get("root", -1))) for r in rows})
+                >= expected * expected else "point-to-point")
+        root = _root_cause("MISMATCH" if status != "OK" else "OK",
+                           ranks=sorted({int(r.get("rank", -1)) for r in rows}),
+                           mismatches=evidence)
         result = {"comm_id": comm_id, "counter": counter,
-                  "status": status, "operation": op, "evidence": evidence}
-        result.update(_root_cause("MISMATCH" if status != "OK" else "OK",
-                                  ranks=sorted({int(r.get("rank", -1)) for r in rows}),
-                                  mismatches=evidence))
+                  "status": status, "operation": op, "evidence": evidence,
+                  "root_cause": root["root_cause"], "confidence": root["confidence"],
+                  "first_error_rank": root["first_error_rank"]}
         if status != "OK":
             result["root_cause"] = {"P2P_PEER_MISSING": "P2P_PEER_RELATION_MISMATCH",
                                      "P2P_TRANSFER_MISMATCH": "P2P_TRANSFER_SIZE_MISMATCH",
@@ -234,7 +251,16 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
     """
     groups = defaultdict(list)
     for record in records:
-        if record.get("phase") != "complete":
+        # ENABLE_COLLTRACE writes a separate legacy completion-shaped event.
+        # It has topology_kind but no CCL-D algorithm/protocol fields and must
+        # never be merged with the diagnostic slot completion.
+        if (record.get("phase") != "complete" or
+                ("algorithm" not in record and "topology_kind" in record)):
+            continue
+        # P2P work has separate sendOpCount/recvOpCount and can be present on
+        # only a subset of ranks in a channel batch. Do not treat it as one
+        # rank-synchronous collective completion.
+        if int(record.get("algorithm", -1)) == 255:
             continue
         key = (str(record.get("comm_id", "unknown")),
                str(record.get("counter", "unknown")))
@@ -247,6 +273,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                                        "send_peers": {}, "recv_peers": {},
                                        "send_protocol_peers": {}, "recv_protocol_peers": {},
                                        "peer_overflow": False,
+                                       "dropped_batches": 0,
                                        "peer_data_inconsistent": [],
                                        "channels": 0, "complete": True,
                                        "start_timestamp": None,
@@ -280,6 +307,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                             peer_key = str(int(peers[peer_index]["peer"]))
                             proto_map[peer_key] = proto_map.get(peer_key, 0) + int(value)
             item["peer_overflow"] = item["peer_overflow"] or bool(row.get("peer_overflow", False))
+            item["dropped_batches"] += int(row.get("dropped_batches", 0))
             channel = int(row.get("channel", -1))
             for field, peer_field, count_field in (
                     ("send_peer_protocol_bytes", "send_peers", "send_count_by_protocol"),
@@ -370,21 +398,31 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                     by_channel[int(row.get("channel", -1))].append(row)
                 asymmetric = []
                 for channel, channel_rows in by_channel.items():
-                    by_rank_row = {int(r["rank"]): r for r in channel_rows}
+                    rank_rows = defaultdict(list)
+                    for row in channel_rows:
+                        rank_rows[int(row["rank"])].append(row)
+                    by_rank_row = {}
+                    bad = False
+                    for rank, batch_rows in rank_rows.items():
+                        topology = {(int(r["ring_prev"]), int(r["ring_next"])) for r in batch_rows}
+                        if len(topology) != 1:
+                            bad = True
+                        by_rank_row[rank] = next(iter(topology))
                     ring_ranks = set(by_rank_row)
-                    bad = (len(by_rank_row) != len(channel_rows) or
-                           any(int(r["ring_prev"]) not in ring_ranks or int(r["ring_next"]) not in ring_ranks
-                               for r in channel_rows))
+                    if any(prev not in ring_ranks or nxt not in ring_ranks
+                           for prev, nxt in by_rank_row.values()):
+                        bad = True
                     if not bad:
-                        bad = any(int(by_rank_row[int(r["ring_next"])]["ring_prev"]) != int(r["rank"])
-                                  or int(by_rank_row[int(r["ring_prev"])]["ring_next"]) != int(r["rank"])
-                                  for r in channel_rows)
+                        bad = any(by_rank_row[nxt][0] != rank or by_rank_row[prev][1] != rank
+                                  for rank, (prev, nxt) in by_rank_row.items())
                     rates = []
-                    for r in channel_rows:
-                        start, end = r.get("start_timestamp"), r.get("end_timestamp")
-                        duration = int(end) - int(start) if start is not None and end is not None else 0
-                        if duration > 0 and int(r.get("send_count", 0)) > 0:
-                            rates.append(int(r["send_count"]) / duration)
+                    for rank, batch_rows in rank_rows.items():
+                        starts = [int(r["start_timestamp"]) for r in batch_rows if r.get("start_timestamp") is not None]
+                        ends = [int(r["end_timestamp"]) for r in batch_rows if r.get("end_timestamp") is not None]
+                        duration = max(ends) - min(starts) if starts and ends else 0
+                        sent = sum(int(r.get("send_count", 0)) for r in batch_rows)
+                        if duration > 0 and sent > 0:
+                            rates.append(sent / duration)
                     if len(rates) >= 2 and min(rates) > 0 and max(rates) / min(rates) >= 2:
                         bad = True
                     if bad:
@@ -441,7 +479,9 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
             slow_ranks = sorted(rank for rank, value in by_rank.items()
                                 if value["send_rate"] < baseline * slow_rate_ratio)
         topology_fault = topology_analysis["status"] in ("RING_ASYMMETRY", "TREE_ASYMMETRY")
+        dropped = sorted(rank for rank, value in by_rank.items() if value["dropped_batches"] > 0)
         status = "MISSING_COMPLETION" if missing or incomplete else (
+            "DIAGNOSTIC_BATCH_DROPPED" if dropped else
             "COMM_SLOW" if slow_ranks else
             topology_analysis["status"] if topology_fault else
             "COUNT_MISMATCH" if count_mismatch and not topology_pending else
@@ -482,6 +522,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                                                              if value["peer_overflow"]),
                         "peer_data_inconsistent_ranks": sorted(set(peer_inconsistent)),
                         "peer_data_inconsistent_channels": peer_inconsistent_channels,
+                        "diagnostic_dropped_ranks": dropped,
                         "op_counts": op_counts,
                         "topology_edges": topology_edges,
                         "topology_groups": topology_groups,
@@ -497,6 +538,40 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                                   recv_counts=recv_values,
                                   peer_data_truncated_ranks=result["peer_data_truncated_ranks"]))
         results.append(result)
+    return results
+
+def analyze_p2p_completions(records):
+    """Expose P2P device evidence without applying collective rank semantics.
+
+    P2P work carries independent sendOpCount/recvOpCount values. The current
+    completion schema exports only one selected counter, so cross-rank edge
+    pairing cannot safely be asserted from these records yet. Host enqueue
+    records are checked edge-by-edge by analyze_operation_semantics().
+    """
+    groups = defaultdict(list)
+    for row in records:
+        if row.get("phase") == "complete" and row.get("algorithm") == 255:
+            groups[(str(row.get("comm_id", "unknown")),
+                    str(row.get("counter", "unknown")))].append(row)
+    results = []
+    for (comm_id, counter), rows in sorted(groups.items()):
+        edges = defaultdict(lambda: {"send_bytes": 0, "recv_bytes": 0})
+        ranks = set()
+        for row in rows:
+            rank = int(row.get("rank", -1)); ranks.add(rank)
+            for field, direction, peer_field in (("send_peers", "send_bytes", "peer"),
+                                                  ("recv_peers", "recv_bytes", "peer")):
+                for item in row.get(field, []) or []:
+                    edge = (rank, int(item[peer_field])) if direction == "send_bytes" else (int(item[peer_field]), rank)
+                    edges[edge][direction] += int(item.get("bytes", 0))
+        results.append({"comm_id": comm_id, "counter": counter,
+                        "status": "P2P_COMPLETION_UNCORRELATED",
+                        "root_cause": "P2P_COMPLETION_NEEDS_DIRECTIONAL_TRACE_ID",
+                        "confidence": "low", "first_error_rank": None,
+                        "ranks": sorted(ranks), "records": len(rows),
+                        "edge_evidence": {f"{a}->{b}": value for (a, b), value in sorted(edges.items())},
+                        "evidence": {"reason": "completion currently exports one selected opCount; "
+                                    "sendOpCount and recvOpCount are not separately correlated"}})
     return results
 
 def analyze_completion_windows(records, *, window_size=5, slow_rate_ratio=0.5,
