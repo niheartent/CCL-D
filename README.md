@@ -62,7 +62,7 @@ python3 tools/ccld_monitor.py --once --fail-on-anomaly \
 ```
 
 持续多轮偏慢检查：`--slow-window 5`。窗口模式只用于过滤单轮抖动，仍然是相对速率证据。
-运行中采样停滞检查默认启用，连续 3 个采样间隔无进展且同节点对照 rank 仍有进展时输出 `COMM_STALLED`；可用 `--stagnant-intervals N` 调整间隔数。
+运行中采样停滞检查默认启用，连续 3 个采样间隔无进展且同节点对照 rank 仍有进展时输出 `COMM_STALLED`；可用 `--stagnant-intervals N` 调整间隔数。 completion 事件还包含 `send_count_by_protocol` 和 `recv_count_by_protocol`，数组顺序为 LL、LL128、Simple。
 
 ## 双节点验证
 
