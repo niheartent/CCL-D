@@ -15,6 +15,7 @@
 | Python analyzer/monitor 单测 | 已完成 | 最近一次 39 项通过 |
 | 参数/缺失 rank 合成注入 | 已验证 | `MISMATCH`、`MISSING_RANK` |
 | slow/stall/missing completion 合成日志 | 已验证分析器路径 | 不等价于真实 GPU/网络故障 |
+| host 分配 `kernelIndex` 并传入 collective/P2P work | 原型已接入并通过窄函数集编译 | 目前尚未完成跨 plan 聚合、最终回收和完整运行验收 |
 
 ## 设计材料明确要求但当前没有完成的部分
 
@@ -53,7 +54,7 @@
 不再用单一百分比表示完成度。按材料验收分层：
 
 - **数据面回归层**：五类算子已通过一次 8 rank、20 轮正确性测试。
-- **诊断记录层**：有 host enqueue、device completion、sample、peer/channel 字段，但操作级 LRU 生命周期未完成。
+- **诊断记录层**：host 已开始分配并传入 `kernelIndex`，device 已停止用 `opCount % slot` 选择索引；跨 plan 聚合、最终回收和完整运行验收仍未完成。
 - **分析器层**：已有基础参数、缺失、速率、P2P 边和 Ring/Tree 规则，但不是完整决策树。
 - **论文级验收层**：未完成，尤其缺 LRU/callback、多 work 归属、协议精确计数、训练任务和性能数据。
 
