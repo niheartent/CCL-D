@@ -34,6 +34,12 @@
 | 真实训练 slow/hang | 未完成 | 当前主要是诊断记录注入和合成日志 |
 | 性能、CPU、pinned memory、GPU 开销 | 未完成 | 没有按材料口径完成对照实验 |
 
+## 已确定的实现决策
+
+- LRU body 用尽时不阻塞通信、不覆盖活动记录、不自动扩容；输出 `RESOURCE_EXHAUSTED` 或 `OBSERVATION_DROPPED`。
+- 多 channel 操作以一个 plan 的所有预期 channel/work 完成为整体结束；channel 级采样保留，plan 级通知负责最终输出和回收。
+- 这两项是本工程的实现决策，不是材料中明确给出的原文规则。详细理由见 [`CCL-D_IMPLEMENTATION_DECISIONS.md`](CCL-D_IMPLEMENTATION_DECISIONS.md)。
+
 ## 当前明确问题
 
 上一轮五算子数据面回归中观察到诊断记录丢失。随后加入了 `dropped_batches` 记录，但这只能把观测丢失显式化，不能证明生命周期正确。问题根因尚未完成材料级修复：当前实现仍把物理 slot 和操作身份混用，且没有完成 `kernelIndex` LRU、callback 回收和多 work 归属。
