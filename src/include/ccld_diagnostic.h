@@ -20,6 +20,11 @@ bool rcclCcldEnabled();
 void rcclCcldForgetComm(const struct ncclComm* comm);
 void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
                               const struct ncclCcldDiag* diag);
+void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t opCount,
+                               uint16_t channel, uint64_t sendCount,
+                               uint64_t recvCount, uint64_t timestampNs,
+                               uint64_t sendDelta, uint64_t recvDelta,
+                               uint64_t elapsedNs, bool counterReset);
 
 #ifdef ENABLE_COLLTRACE
 void rcclCcldRecordDevice(const struct ncclComm* comm,

@@ -27,7 +27,7 @@
 | pinned memory 诊断通道 | 第一版完成 | 还没有完整 LRU trace slot 管理 |
 | 诊断线程生命周期 | 部分完成 | 当前轮询 complete，未实现完整 callback/slot 回收模型 |
 | kernel 速率离群检查 | 部分完成 | completion start/end 与 send/recv 总数可计算 rank 速率并输出 COMM_SLOW；新增可选连续窗口 COMM_SLOW_WINDOW |
-| sendRate/recvRate 周期采样 | 未完成 | 没有周期采样、delta、窗口化停滞判断 |
+| sendRate/recvRate 周期采样 | 第一版完成 | 诊断线程按 `RCCL_CCLD_SAMPLE_MS` 读取 pinned 计数并输出 `phase=sample`，同时记录 `send_delta/recv_delta`、窗口时长、B/s 速率和 counter 回退标记；分析器可按同节点对照 rank 检出 `COMM_STALLED`，仍需按 protocol 精确计数和长期资源回收 |
 | Ring 横向比较 | 基础完成 | completion 输出 `ring_prev/ring_next`，分析器按 channel 校验环的互为前后继关系和速率；缺字段时明确输出 `RING_TOPOLOGY_PENDING` |
 | Tree 同层比较 | 基础完成 | completion 输出 `tree_up/tree_down0..2/tree_depth`，分析器按真实 channel/depth 比较同层推进速率；仍需真实多节点 Tree 回归 |
 | peer/edge 拓扑字段 | 基础完成 | Ring/Tree 使用 RCCL channel 实际拓扑字段；`topology_groups` 继续保留收发边聚合，避免根据 rank 编号猜拓扑 |
@@ -53,7 +53,7 @@
 
 按论文设计的完整验收口径，当前已完成的是 Trace/enqueue/completion/monitor 主链路和基础 Ring/Tree 结构分析，约占整体目标的一半以上。剩余工作集中在四类：
 
-1. **高精度采样**：实现 pinned buffer 的 trace slot/LRU 生命周期、诊断线程周期读取、delta 计算和窗口化停滞判断；补齐 Simple、LL、LL128 的协议级 send/recv 统计。
+1. **高精度采样**：已完成第一版 pinned buffer 周期读取、sample JSONL 和同节点停滞判定；后续实现 trace slot/LRU 生命周期和 Simple、LL、LL128 的协议级 send/recv 统计。
 2. **决策树**：把未进入、参数不一致、kernel 未完成、计算慢、通信推进慢和拓扑失衡统一成带证据的根因结论。
 3. **覆盖矩阵**：在两节点 8 rank 上覆盖 Ring/Tree、AllReduce/AllGather/ReduceScatter/Broadcast、多 communicator、stream 和长时间压力；再补 Graph、CollNet、NVLS、MSCCL 路径。
 4. **真实故障与开销评估**：补充可控的进程退出、通信线程停滞、UCX/网络路径异常实验，并测量关闭/开启诊断时的吞吐、端到端时间、CPU、pinned memory 和日志量。
@@ -67,14 +67,14 @@
 | 维度 | 当前完成 | 距离完整目标 | 主要缺口 |
 |---|---:|---:|---|
 | 通信库插桩与 Trace 主链路 | 约 70% | 约 30% | trace slot/LRU、稳定生命周期、多 communicator/并发场景 |
-| 分布式 rank 指标探针 | 约 35% | 约 65% | 周期采样、delta 速率、Simple/LL/LL128 精确计数、资源回收 |
+| 分布式 rank 指标探针 | 约 50% | 约 50% | trace slot/LRU、协议级精确计数、资源回收和长稳 |
 | 集中式决策分析器 | 约 45% | 约 55% | 统一根因决策树、计算慢与通信慢区分、证据链和置信度 |
 | 主机流量识别与采集 | 约 30% | 约 70% | peer/edge 真实流量聚合、网络路径异常、跨节点时序校准 |
 | Ring/Tree 拓扑分析 | 约 45% | 约 55% | 多 collective/protocol 的真实覆盖、CollNet/NVLS/MSCCL 路径 |
 | 故障注入与验证 | 约 45% | 约 55% | 真实进程退出、kernel 超时、UCX/IB 异常、清理与超时治理 |
 | 性能与长稳验收 | 约 15% | 约 85% | 1k/10k 轮、30 分钟、训练 workload、P50/P95/P99 开销 |
 
-按上述权重，当前约完成完整目标的 **45%～55%**。已有的是“可运行的第一版诊断闭环”；剩余工作中，真正决定能否称为完整实现的是探针的周期化指标、决策器的根因归因、真实故障边界和性能/长稳数据。
+按上述权重，当前约完成完整目标的 **50%～60%**。新增的周期采样已经把探针从“完成后读取”推进到“运行中观测”，但仍需协议级计数、统一根因归因、真实故障边界和性能/长稳数据，才能称为完整实现。
 
 ## 结论
 

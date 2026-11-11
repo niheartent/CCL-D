@@ -6,7 +6,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ccld_analyze import (analyze, analyze_completions,
-                          analyze_completion_windows, load_records)
+                          analyze_completion_windows, analyze_progress_samples,
+                          load_records)
 
 
 def record(rank, *, op="AllReduce", byte_count=4096, ts=1_000_000_000,
@@ -35,6 +36,8 @@ class CcldAnalyzeTest(unittest.TestCase):
         result = analyze([record(0), record(1, op="Broadcast")])[0]
         self.assertEqual(result["status"], "MISMATCH")
         self.assertEqual(result["mismatches"]["op"], ["AllReduce", "Broadcast"])
+        self.assertEqual(result["root_cause"], "PARAMETER_MISMATCH")
+        self.assertEqual(result["confidence"], "high")
 
     def test_detects_count_and_byte_mismatch(self):
         result = analyze([record(0), record(1, byte_count=2048)])[0]
@@ -56,6 +59,8 @@ class CcldAnalyzeTest(unittest.TestCase):
                          timeout_ms=1000)[0]
         self.assertEqual(result["status"], "MISSING_RANK")
         self.assertEqual(result["missing_ranks"], [1])
+        self.assertEqual(result["first_error_rank"], 1)
+        self.assertEqual(result["root_cause"], "RANK_DID_NOT_ENQUEUE")
 
     def test_reports_pending_before_timeout(self):
         result = analyze([record(0)], now_ns=1_100_000_000,
@@ -127,6 +132,9 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual(result["status"], "COMM_SLOW")
         self.assertEqual(result["slow_ranks"], [2])
         self.assertAlmostEqual(result["per_rank"][2]["send_rate"], 2.5)
+        self.assertEqual(result["root_cause"], "COMMUNICATION_PROGRESS_SLOW")
+        self.assertEqual(result["first_error_rank"], 2)
+        self.assertIn("rates", result["evidence"])
 
     def test_completion_keeps_peer_topology_edges(self):
         rows = [{"phase": "complete", "comm_id": "abcd", "counter": 9,
@@ -252,6 +260,47 @@ class CcldAnalyzeTest(unittest.TestCase):
                              "start_timestamp": 0, "end_timestamp": duration,
                              "complete": True})
         self.assertEqual(analyze_completion_windows(rows, window_size=3), [])
+
+    def test_progress_samples_detect_rank_stall_with_local_peer_progress(self):
+        rows = []
+        for ts, p0, p1 in ((0, 0, 0), (10, 0, 10), (20, 0, 20), (30, 0, 30)):
+            rows.extend([
+                {"phase": "sample", "comm_id": "abcd", "counter": 20,
+                 "rank": 0, "node": 0, "timestamp_ns": ts,
+                 "send_count": p0, "recv_count": p0},
+                {"phase": "sample", "comm_id": "abcd", "counter": 20,
+                 "rank": 1, "node": 0, "timestamp_ns": ts,
+                 "send_count": p1, "recv_count": p1},
+            ])
+        result = analyze_progress_samples(rows, stagnant_intervals=3)[0]
+        self.assertEqual(result["status"], "COMM_STALLED")
+        self.assertEqual(result["slow_ranks"], [0])
+        self.assertEqual(result["root_cause"], "RANK_PROGRESS_STALLED")
+        self.assertEqual(result["stalled_intervals"][0]["progressing_peers"], [1])
+
+    def test_progress_samples_do_not_compare_different_nodes(self):
+        rows = []
+        for ts, p0, p1 in ((0, 0, 0), (10, 0, 10), (20, 0, 20), (30, 0, 30)):
+            rows.extend([
+                {"phase": "sample", "comm_id": "abcd", "counter": 21,
+                 "rank": 0, "node": 0, "timestamp_ns": ts,
+                 "send_count": p0, "recv_count": p0},
+                {"phase": "sample", "comm_id": "abcd", "counter": 21,
+                 "rank": 1, "node": 1, "timestamp_ns": ts,
+                 "send_count": p1, "recv_count": p1},
+            ])
+        self.assertEqual(analyze_progress_samples(rows, stagnant_intervals=3), [])
+
+    def test_progress_samples_ignore_counter_reset_intervals(self):
+        rows = []
+        for i, value in enumerate((100, 110, 0, 0, 0)):
+            rows.append({"phase": "sample", "comm_id": "reset", "counter": 9,
+                         "timestamp_ns": (i + 1) * 10_000_000,
+                         "rank": 0, "node": 0, "channel": 0,
+                         "send_count": value, "recv_count": value,
+                         "counter_reset": i == 2})
+        result = analyze_progress_samples(rows, stagnant_intervals=3)
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

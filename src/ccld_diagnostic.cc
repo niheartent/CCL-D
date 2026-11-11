@@ -144,6 +144,21 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
   std::ostringstream traceId;
   traceId << std::hex << std::setw(16) << std::setfill('0') << comm->commHash
           << ':' << std::dec << diag->opCount;
+  // Diagnostic-only fault modes make hang/slow handling reproducible inside
+  // the container without touching GPU data movement.  They deliberately
+  // alter only the emitted evidence for a selected rank/counter.
+  const char* fault = std::getenv("RCCL_CCLD_FAULT");
+  const bool inject = fault && faultSelected(comm, diag->opCount);
+  const std::string faultName = fault ? fault : "";
+  bool complete = true;
+  uint64_t startTimestamp = diag->startTimestamp;
+  uint64_t endTimestamp = diag->endTimestamp;
+  if (inject && (faultName == "completion_missing" || faultName == "missing_completion" ||
+                 faultName == "stall" || faultName == "hang")) complete = false;
+  if (inject && faultName == "slow" && endTimestamp > startTimestamp) {
+    const uint64_t duration = endTimestamp - startTimestamp;
+    endTimestamp = startTimestamp + duration * 10;
+  }
   g_log << "{\"schema\":1,\"phase\":\"complete\",\"timestamp_ns\":" << nowNs()
         << ",\"trace_id\":\"" << traceId.str()
         << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
@@ -156,9 +171,9 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
         << ",\"protocol\":" << static_cast<int>(diag->protocol)
         << ",\"send_count\":" << diag->sendCount
         << ",\"recv_count\":" << diag->recvCount
-        << ",\"start_timestamp\":" << diag->startTimestamp
-        << ",\"end_timestamp\":" << diag->endTimestamp
-        << ",\"complete\":true";
+        << ",\"start_timestamp\":" << startTimestamp
+        << ",\"end_timestamp\":" << endTimestamp
+        << ",\"complete\":" << (complete ? "true" : "false");
   if (diag->algorithm == NCCL_ALGO_TREE && diag->channel < MAXCHANNELS) {
     const ncclTree& tree = comm->channels[diag->channel].tree;
     g_log << ",\"tree_up\":" << tree.up
@@ -172,6 +187,37 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
           << ",\"ring_next\":" << ring.next;
   }
   g_log << "}\n";
+  g_log.flush();
+}
+
+void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t opCount,
+                               uint16_t channel, uint64_t sendCount,
+                               uint64_t recvCount, uint64_t timestampNs,
+                               uint64_t sendDelta, uint64_t recvDelta,
+                               uint64_t elapsedNs, bool counterReset) {
+  if (!comm || !enabled()) return;
+  std::lock_guard<std::mutex> guard(g_lock);
+  init(comm);
+  if (!g_log) return;
+  std::ostringstream traceId;
+  traceId << std::hex << std::setw(16) << std::setfill('0') << comm->commHash
+          << ':' << std::dec << opCount;
+  g_log << "{\"schema\":1,\"phase\":\"sample\",\"timestamp_ns\":" << timestampNs
+        << ",\"trace_id\":\"" << traceId.str()
+        << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
+        << "\",\"counter\":" << opCount << ",\"op_count\":" << opCount
+        << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
+        << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
+        << ",\"channel\":" << channel << ",\"send_count\":" << sendCount
+        << ",\"recv_count\":" << recvCount
+        << ",\"send_delta\":" << sendDelta << ",\"recv_delta\":" << recvDelta
+        << ",\"elapsed_ns\":" << elapsedNs
+        << ",\"counter_reset\":" << (counterReset ? "true" : "false")
+        << ",\"send_rate_Bps\":" << (elapsedNs ? static_cast<uint64_t>(
+              static_cast<long double>(sendDelta) * 1000000000.0L / elapsedNs) : 0)
+        << ",\"recv_rate_Bps\":" << (elapsedNs ? static_cast<uint64_t>(
+              static_cast<long double>(recvDelta) * 1000000000.0L / elapsedNs) : 0)
+        << ",\"state\":\"running\"}\n";
   g_log.flush();
 }
 

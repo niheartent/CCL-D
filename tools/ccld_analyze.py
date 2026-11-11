@@ -8,6 +8,63 @@ from statistics import median
 
 FIELDS = ("op", "count", "bytes", "datatype", "root")
 
+def _root_cause(status, *, ranks=None, missing_ranks=None, incomplete_ranks=None,
+                slow_ranks=None, mismatches=None, topology_analysis=None,
+                per_rank=None, send_counts=None, recv_counts=None):
+    """Attach a stable, machine-readable diagnosis to every result.
+
+    ``status`` remains the compact compatibility field consumed by existing
+    scripts.  The additional fields make the monitor output actionable: a
+    caller can identify the first affected rank and the evidence used by the
+    decision without reimplementing the analyzer's precedence rules.
+    """
+    ranks = sorted(ranks or [])
+    missing_ranks = sorted(missing_ranks or [])
+    incomplete_ranks = sorted(incomplete_ranks or [])
+    slow_ranks = sorted(slow_ranks or [])
+    if status == "MISMATCH":
+        cause, confidence, affected = "PARAMETER_MISMATCH", "high", ranks
+    elif status == "MISSING_RANK":
+        cause, confidence, affected = "RANK_DID_NOT_ENQUEUE", "high", missing_ranks
+    elif status == "MISSING_COMPLETION":
+        cause, confidence, affected = "COLLECTIVE_DID_NOT_COMPLETE", "high", incomplete_ranks or missing_ranks
+    elif status in ("COMM_SLOW", "COMM_SLOW_WINDOW", "COMM_STALLED"):
+        cause, confidence, affected = "COMMUNICATION_PROGRESS_SLOW", "medium", slow_ranks
+    elif status in ("RING_ASYMMETRY", "TREE_ASYMMETRY"):
+        cause, confidence, affected = "TOPOLOGY_PROGRESS_ASYMMETRY", "medium", ranks
+    elif status == "COUNT_MISMATCH":
+        cause, confidence, affected = "DEVICE_TRANSFER_COUNT_MISMATCH", "medium", ranks
+    elif status == "ENQUEUE_SKEW":
+        cause, confidence, affected = "HOST_ENQUEUE_SKEW", "low", ranks
+    elif status == "TOPOLOGY_PENDING":
+        cause, confidence, affected = "INSUFFICIENT_TOPOLOGY_EVIDENCE", "low", ranks
+    elif status == "PENDING":
+        cause, confidence, affected = "WAITING_FOR_RANK_RECORDS", "low", missing_ranks
+    else:
+        cause, confidence, affected = "NONE", "high", []
+    evidence = {}
+    if mismatches:
+        evidence["mismatches"] = mismatches
+    if missing_ranks:
+        evidence["missing_ranks"] = missing_ranks
+    if incomplete_ranks:
+        evidence["incomplete_ranks"] = incomplete_ranks
+    if slow_ranks:
+        evidence["slow_ranks"] = slow_ranks
+    if send_counts is not None:
+        evidence["send_counts"] = send_counts
+    if recv_counts is not None:
+        evidence["recv_counts"] = recv_counts
+    if topology_analysis and topology_analysis.get("status") not in (None, "NO_TOPOLOGY"):
+        evidence["topology"] = topology_analysis
+    if per_rank and slow_ranks:
+        evidence["rates"] = {str(rank): {"send_rate": per_rank[rank].get("send_rate"),
+                                          "recv_rate": per_rank[rank].get("recv_rate")}
+                              for rank in slow_ranks if rank in per_rank}
+    return {"root_cause": cause, "confidence": confidence,
+            "first_error_rank": min(affected) if affected else None,
+            "evidence": evidence}
+
 def load_records(paths):
     records = []
     for path in paths:
@@ -60,13 +117,16 @@ def analyze(records, *, now_ns=None, timeout_ms=2000, slow_skew_ms=2):
             status = "ENQUEUE_SKEW"
         else:
             status = "OK"
-        results.append({"comm_id": comm_id, "counter": counter,
+        result = {"comm_id": comm_id, "counter": counter,
                         "trace_id": rows[0].get("trace_id"), "status": status,
                         "ranks": ranks, "expected_ranks": expected_ranks,
                         "missing_ranks": missing, "mismatches": mismatches,
                         "nnodes": nnodes, "skew_ms": round(skew_ms, 3),
                         "age_ms": round(age_ms, 1),
-                        "records": len(rows)})
+                        "records": len(rows)}
+        result.update(_root_cause(status, ranks=ranks, missing_ranks=missing,
+                                  mismatches=mismatches))
+        results.append(result)
     return results
 
 def analyze_completions(records, *, slow_rate_ratio=0.5):
@@ -246,7 +306,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
             topology_analysis["status"] if topology_fault else
             "COUNT_MISMATCH" if count_mismatch and not topology_pending else
             "TOPOLOGY_PENDING" if topology_pending else "OK")
-        results.append({"comm_id": comm_id, "counter": counter, "status": status,
+        result = {"comm_id": comm_id, "counter": counter, "status": status,
                         "ranks": ranks, "expected_ranks": list(range(expected)),
                         "missing_ranks": missing, "incomplete_ranks": incomplete,
                         "slow_ranks": slow_ranks, "send_counts": send_values,
@@ -258,7 +318,13 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                         "topology_analysis": topology_analysis,
                         "algorithms": algorithms, "protocols": protocols,
                         "nnodes": nnodes,
-                        "records": len(rows)})
+                        "records": len(rows)}
+        result.update(_root_cause(status, ranks=ranks, missing_ranks=missing,
+                                  incomplete_ranks=incomplete, slow_ranks=slow_ranks,
+                                  topology_analysis=topology_analysis,
+                                  per_rank=by_rank, send_counts=send_values,
+                                  recv_counts=recv_values))
+        results.append(result)
     return results
 
 def analyze_completion_windows(records, *, window_size=5, slow_rate_ratio=0.5,
@@ -316,9 +382,82 @@ def analyze_completion_windows(records, *, window_size=5, slow_rate_ratio=0.5,
                     persistent[rank] += 1
         slow_ranks = sorted(rank for rank, count in persistent.items() if count)
         if observed and slow_ranks:
-            results.append({"comm_id": comm_id, "status": "COMM_SLOW_WINDOW",
+            result = {"comm_id": comm_id, "status": "COMM_SLOW_WINDOW",
                             "slow_ranks": slow_ranks,
                             "window_size": window_size,
                             "observed_windows": observed,
-                            "persistent_windows": dict(persistent)})
+                            "persistent_windows": dict(persistent)}
+            result.update(_root_cause("COMM_SLOW_WINDOW", slow_ranks=slow_ranks))
+            results.append(result)
+    return results
+
+def analyze_progress_samples(records, *, stagnant_intervals=3):
+    """Find a rank with no counter progress while a same-node peer progresses.
+
+    Samples use each host's monotonic clock. Cross-node timestamp comparison is
+    intentionally avoided; this detector only compares ranks reported on the
+    same node and within the same communicator/operation counter.
+    """
+    if stagnant_intervals < 2:
+        raise ValueError("stagnant_intervals must be at least 2")
+    groups = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
+    for row in records:
+        if row.get("phase") != "sample" or row.get("timestamp_ns") is None:
+            continue
+        node = int(row.get("node", -1))
+        rank = int(row.get("rank", -1))
+        channel = int(row.get("channel", -1))
+        ts = int(row["timestamp_ns"])
+        bucket = groups[(str(row.get("comm_id", "unknown")),
+                         str(row.get("counter", "unknown")))][node][rank][channel]
+        item = bucket.setdefault(ts, {"send_count": 0, "recv_count": 0})
+        item["send_count"] += int(row.get("send_count", 0))
+        item["recv_count"] += int(row.get("recv_count", 0))
+
+    results = []
+    for (comm_id, counter), nodes in sorted(groups.items()):
+        stalled = []
+        for node, ranks in nodes.items():
+            totals = {}
+            for rank, channels in ranks.items():
+                for channel, samples in channels.items():
+                    points = sorted(samples.items())
+                    intervals = []
+                    for (t0, first), (t1, second) in zip(points, points[1:]):
+                        if first.get("counter_reset") or second.get("counter_reset"):
+                            continue
+                        intervals.append((t0, t1,
+                                          second["send_count"] - first["send_count"],
+                                          second["recv_count"] - first["recv_count"]))
+                    totals[(rank, channel)] = intervals
+            for (rank, channel), intervals in totals.items():
+                for offset in range(0, len(intervals) - stagnant_intervals + 1):
+                    window = intervals[offset:offset + stagnant_intervals]
+                    if any(send > 0 or recv > 0 for _, _, send, recv in window):
+                        continue
+                    start, end = window[0][0], window[-1][1]
+                    peer_progress = []
+                    for (peer, peer_channel), peer_intervals in totals.items():
+                        if peer == rank or peer_channel != channel:
+                            continue
+                        if any(t1 >= start and t0 <= end and (send > 0 or recv > 0)
+                               for t0, t1, send, recv in peer_intervals):
+                            peer_progress.append(peer)
+                    if peer_progress:
+                        stalled.append({"rank": rank, "node": node,
+                                        "channel": channel,
+                                        "start_ns": start, "end_ns": end,
+                                        "intervals": stagnant_intervals,
+                                        "duration_ms": round((end - start) / 1_000_000, 3),
+                                        "progressing_peers": sorted(peer_progress)})
+                        break
+        if stalled:
+            slow_ranks = sorted({item["rank"] for item in stalled})
+            result = {"comm_id": comm_id, "counter": counter,
+                      "status": "COMM_STALLED", "slow_ranks": slow_ranks,
+                      "stalled_intervals": stalled}
+            result.update(_root_cause("COMM_STALLED", slow_ranks=slow_ranks))
+            result["root_cause"] = "RANK_PROGRESS_STALLED"
+            result["evidence"]["stalled_intervals"] = stalled
+            results.append(result)
     return results

@@ -34,6 +34,8 @@
 #include <dlfcn.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <algorithm>
+#include <chrono>
 #include <unistd.h>
 #include "graph/topo.h"
 #include "graph/xml.h"
@@ -233,12 +235,18 @@ void NCCL_NO_OPTIMIZE commPoison(ncclComm_t comm) {
 
 RCCL_PARAM(KernelCollTraceEnable, "KERNEL_COLL_TRACE_ENABLE", 0);
 RCCL_PARAM(KernelCollTraceThreadEnable, "KERNEL_COLL_TRACE_THREAD_ENABLE", 0);
+RCCL_PARAM(KernelCollTraceSampleMs, "CCLD_SAMPLE_MS", 10);
 
 #ifdef ENABLE_COLLTRACE
 // Should be in sync with 'ALL_COLLS' in Generator.cmake
 void *ncclCommThreadMain(void *arg) {
   ncclComm_t comm = (ncclComm_t)arg;
   int head[MAXCHANNELS];
+  uint64_t lastCcldSampleNs[MAXCHANNELS] = {};
+  uint64_t lastCcldSend[MAXCHANNELS] = {};
+  uint64_t lastCcldRecv[MAXCHANNELS] = {};
+  const uint64_t sampleIntervalNs = static_cast<uint64_t>(
+      std::min<int64_t>(60000, std::max<int64_t>(1, rcclParamKernelCollTraceSampleMs()))) * 1000000ULL;
   double vega_gpu_rtc_freq;
 
   vega_gpu_rtc_freq = GetDeviceWallClockRateInKhz(comm->cudaDev) * 1.0E3;
@@ -251,12 +259,49 @@ void *ncclCommThreadMain(void *arg) {
   }
   do {
     if (comm->ccldDiag != nullptr) {
+      const uint64_t sampleNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
       for (int channel = 0; channel < MAXCHANNELS; channel++) {
         volatile struct ncclCcldDiag* diag = comm->ccldDiag + channel;
-        if (__atomic_load_n(&diag->state, __ATOMIC_ACQUIRE) == 2) {
-          struct ncclCcldDiag snapshot = *(const struct ncclCcldDiag*)diag;
+        const uint32_t state = __atomic_load_n(&diag->state, __ATOMIC_ACQUIRE);
+        if (state == 1) {
+          if (sampleNs - lastCcldSampleNs[channel] >= sampleIntervalNs) {
+            const uint64_t opCount = __atomic_load_n(&diag->opCount, __ATOMIC_RELAXED);
+            const uint64_t sends = __atomic_load_n(&diag->sendCount, __ATOMIC_RELAXED);
+            const uint64_t recvs = __atomic_load_n(&diag->recvCount, __ATOMIC_RELAXED);
+            const bool reset = lastCcldSampleNs[channel] != 0 &&
+                               (sends < lastCcldSend[channel] || recvs < lastCcldRecv[channel]);
+            const uint64_t elapsed = lastCcldSampleNs[channel] ?
+                sampleNs - lastCcldSampleNs[channel] : 0;
+            const uint64_t sendDelta = reset || !lastCcldSampleNs[channel] ? 0 : sends - lastCcldSend[channel];
+            const uint64_t recvDelta = reset || !lastCcldSampleNs[channel] ? 0 : recvs - lastCcldRecv[channel];
+            rcclCcldRecordDeviceSample(comm, opCount, channel, sends, recvs, sampleNs,
+                                       sendDelta, recvDelta, elapsed, reset);
+            lastCcldSampleNs[channel] = sampleNs;
+            lastCcldSend[channel] = sends;
+            lastCcldRecv[channel] = recvs;
+          }
+        } else if (state == 2) {
+          struct ncclCcldDiag snapshot;
+          snapshot.opCount = __atomic_load_n(&diag->opCount, __ATOMIC_RELAXED);
+          snapshot.sendCount = __atomic_load_n(&diag->sendCount, __ATOMIC_RELAXED);
+          snapshot.recvCount = __atomic_load_n(&diag->recvCount, __ATOMIC_RELAXED);
+          snapshot.startTimestamp = __atomic_load_n(&diag->startTimestamp, __ATOMIC_RELAXED);
+          snapshot.endTimestamp = __atomic_load_n(&diag->endTimestamp, __ATOMIC_RELAXED);
+          snapshot.state = state;
+          snapshot.channel = __atomic_load_n(&diag->channel, __ATOMIC_RELAXED);
+          snapshot.funcIndex = __atomic_load_n(&diag->funcIndex, __ATOMIC_RELAXED);
+          snapshot.algorithm = __atomic_load_n(&diag->algorithm, __ATOMIC_RELAXED);
+          snapshot.protocol = __atomic_load_n(&diag->protocol, __ATOMIC_RELAXED);
+          snapshot.treeUp = __atomic_load_n(&diag->treeUp, __ATOMIC_RELAXED);
+          for (int i = 0; i < 3; ++i)
+            snapshot.treeDown[i] = __atomic_load_n(&diag->treeDown[i], __ATOMIC_RELAXED);
+          snapshot.treeDepth = __atomic_load_n(&diag->treeDepth, __ATOMIC_RELAXED);
           rcclCcldRecordDeviceDiag(comm, &snapshot);
           __atomic_store_n(&diag->state, 0u, __ATOMIC_RELEASE);
+          lastCcldSampleNs[channel] = 0;
+          lastCcldSend[channel] = 0;
+          lastCcldRecv[channel] = 0;
         }
       }
     }

@@ -7,7 +7,8 @@ import pathlib
 import time
 
 from ccld_analyze import (analyze, analyze_completions,
-                          analyze_completion_windows, load_records)
+                          analyze_completion_windows, analyze_progress_samples,
+                          load_records)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -22,6 +23,8 @@ def main():
                         help="flag a rank whose device send rate is below this fraction of the median")
     parser.add_argument("--slow-window", type=int, default=0,
                         help="also require a slow rank to persist across this many collectives (0 disables)")
+    parser.add_argument("--stagnant-intervals", type=int, default=3,
+                        help="sample intervals with zero progress before reporting COMM_STALLED")
     parser.add_argument("--all", action="store_true", help="print OK and PENDING groups too")
     parser.add_argument("--fail-on-anomaly", action="store_true",
                         help="return 2 when a mismatch, missing rank, or slow skew is found")
@@ -42,11 +45,14 @@ def main():
                 records, window_size=args.slow_window,
                 slow_rate_ratio=args.slow_rate_ratio,
                 min_slow_windows=max(2, args.slow_window // 2))
+        results += analyze_progress_samples(
+            records, stagnant_intervals=args.stagnant_intervals)
         for result in results:
             status = result["status"]
             anomaly = status in ("MISMATCH", "MISSING_RANK", "ENQUEUE_SKEW",
                                  "COUNT_MISMATCH", "MISSING_COMPLETION", "COMM_SLOW",
-                                 "COMM_SLOW_WINDOW", "RING_ASYMMETRY", "TREE_ASYMMETRY")
+                                 "COMM_SLOW_WINDOW", "COMM_STALLED", "RING_ASYMMETRY",
+                                 "TREE_ASYMMETRY")
             if anomaly:
                 had_anomaly = True
             if not (args.all or anomaly):
