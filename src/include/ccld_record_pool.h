@@ -39,6 +39,11 @@ class RecordPool {
     for (size_t i = 0; i < slots_.size(); ++i) slots_[i].view.kernelIndex = static_cast<uint32_t>(i);
   }
 
+  uint64_t nextCounter() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return nextCounter_++;
+  }
+
   ReserveResult reserve(uint64_t counter, uint32_t channels, uint32_t* kernelIndex) {
     if (channels == 0 || kernelIndex == nullptr) return ReserveResult::ResourceExhausted;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -148,6 +153,7 @@ class RecordPool {
   mutable std::mutex mutex_;
   std::vector<Slot> slots_;
   uint64_t clock_ = 0;
+  uint64_t nextCounter_ = 0;
 };
 
 }  // namespace rccl_ccld

@@ -23,7 +23,6 @@ std::ofstream g_log;
 std::string g_path;
 std::atomic<bool> g_initialized{false};
 std::unordered_map<const ncclComm*, std::unique_ptr<rccl_ccld::RecordPool>> g_pools;
-std::unordered_map<const ncclComm*, std::unordered_map<uint64_t, uint32_t>> g_indices;
 
 bool enabled() {
   const char* value = std::getenv("RCCL_CCLD_ENABLE");
@@ -103,27 +102,22 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
   size_t bytes = count * ncclTypeSize(info->datatype);
   int nranks = comm->nRanks;
   const char* op = safe(info->opName);
-  // RCCL's internal opCount advances later in the proxy path.  Keep a
-  // Use RCCL's canonical operation counter so enqueue and device completion
-  // resolve to the same trace slot. RCCL advances it in the scheduling path.
-  const uint64_t counter = comm->opCount;
   auto poolIt = g_pools.find(comm);
   if (poolIt == g_pools.end()) {
     poolIt = g_pools.emplace(comm, std::unique_ptr<rccl_ccld::RecordPool>(new rccl_ccld::RecordPool(CCLD_DIAG_SLOTS))).first;
   }
-  uint32_t kernelIndex = UINT32_MAX;
-  auto indexIt = g_indices[comm].find(counter);
-  if (indexIt != g_indices[comm].end()) {
-    kernelIndex = indexIt->second;
-  } else if (poolIt->second->reserve(counter, 1, &kernelIndex) == rccl_ccld::ReserveResult::Reserved) {
-    g_indices[comm][counter] = kernelIndex;
-  } else {
-    kernelIndex = UINT32_MAX;
-  }
-  info->ccldKernelIndex = kernelIndex;
+  const uint64_t counter = poolIt->second->nextCounter();
+  info->ccldCounter = counter;
   const char* fault = std::getenv("RCCL_CCLD_FAULT");
   const bool inject = fault && faultSelected(comm, counter);
-  if (inject && std::string(fault) == "skip_record") return;
+  if (inject && std::string(fault) == "skip_record") {
+    info->ccldKernelIndex = UINT32_MAX;
+    return;
+  }
+  uint32_t kernelIndex = UINT32_MAX;
+  const bool reserved = poolIt->second->reserve(counter, 1, &kernelIndex) == rccl_ccld::ReserveResult::Reserved;
+  if (!reserved) kernelIndex = UINT32_MAX;
+  info->ccldKernelIndex = kernelIndex;
   if (inject && std::string(fault) == "op_mismatch") op = "CCLD_INJECTED_OP_MISMATCH";
   if (inject && std::string(fault) == "size_mismatch") {
     ++count;
@@ -147,14 +141,13 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
         << ",\"root\":" << info->root << ",\"kernel_index\":";
   if (kernelIndex == UINT32_MAX) g_log << "null";
   else g_log << kernelIndex;
-  g_log << "}\n";
+  g_log << ",\"diagnostic_status\":\"" << (reserved ? "RECORDED" : "RESOURCE_EXHAUSTED") << "\"}\n";
   g_log.flush();
 }
 
 void rcclCcldForgetComm(const struct ncclComm* comm) {
   if (!comm) return;
   std::lock_guard<std::mutex> guard(g_lock);
-  g_indices.erase(comm);
   g_pools.erase(comm);
 }
 

@@ -11,6 +11,10 @@ int main() {
   RecordPool pool(2);
   uint32_t a = UINT32_MAX, b = UINT32_MAX, c = UINT32_MAX;
 
+  // Multiple host API calls in one RCCL group still receive distinct TraceIDs.
+  assert(pool.nextCounter() == 0);
+  assert(pool.nextCounter() == 1);
+
   assert(pool.reserve(10, 2, &a) == ReserveResult::Reserved);
   assert(pool.reserve(11, 1, &b) == ReserveResult::Reserved);
   assert(a != b);
