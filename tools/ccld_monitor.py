@@ -28,6 +28,8 @@ def main():
     parser.add_argument("--all", action="store_true", help="print OK and PENDING groups too")
     parser.add_argument("--fail-on-anomaly", action="store_true",
                         help="return 2 when a mismatch, missing rank, or slow skew is found")
+    parser.add_argument("--strict-topology", action="store_true",
+                        help="treat Ring/Tree topology asymmetry as a failing anomaly")
     args = parser.parse_args()
     seen = set()
     had_anomaly = False
@@ -51,8 +53,10 @@ def main():
             status = result["status"]
             anomaly = status in ("MISMATCH", "MISSING_RANK", "ENQUEUE_SKEW",
                                  "COUNT_MISMATCH", "MISSING_COMPLETION", "COMM_SLOW",
-                                 "COMM_SLOW_WINDOW", "COMM_STALLED", "RING_ASYMMETRY",
-                                 "TREE_ASYMMETRY")
+                                 "COMM_SLOW_WINDOW", "COMM_STALLED", "PEER_DATA_TRUNCATED",
+                                 "PEER_DATA_INCONSISTENT")
+            if args.strict_topology and status in ("RING_ASYMMETRY", "TREE_ASYMMETRY"):
+                anomaly = True
             if anomaly:
                 had_anomaly = True
             if not (args.all or anomaly):

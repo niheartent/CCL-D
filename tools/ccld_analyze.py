@@ -10,7 +10,8 @@ FIELDS = ("op", "count", "bytes", "datatype", "root")
 
 def _root_cause(status, *, ranks=None, missing_ranks=None, incomplete_ranks=None,
                 slow_ranks=None, mismatches=None, topology_analysis=None,
-                per_rank=None, send_counts=None, recv_counts=None):
+                per_rank=None, send_counts=None, recv_counts=None,
+                peer_data_truncated_ranks=None):
     """Attach a stable, machine-readable diagnosis to every result.
 
     ``status`` remains the compact compatibility field consumed by existing
@@ -38,6 +39,10 @@ def _root_cause(status, *, ranks=None, missing_ranks=None, incomplete_ranks=None
         cause, confidence, affected = "HOST_ENQUEUE_SKEW", "low", ranks
     elif status == "TOPOLOGY_PENDING":
         cause, confidence, affected = "INSUFFICIENT_TOPOLOGY_EVIDENCE", "low", ranks
+    elif status == "PEER_DATA_TRUNCATED":
+        cause, confidence, affected = "PEER_FLOW_EVIDENCE_TRUNCATED", "low", peer_data_truncated_ranks or ranks
+    elif status == "PEER_DATA_INCONSISTENT":
+        cause, confidence, affected = "PEER_FLOW_EVIDENCE_INCONSISTENT", "low", ranks
     elif status == "PENDING":
         cause, confidence, affected = "WAITING_FOR_RANK_RECORDS", "low", missing_ranks
     else:
@@ -57,6 +62,8 @@ def _root_cause(status, *, ranks=None, missing_ranks=None, incomplete_ranks=None
         evidence["recv_counts"] = recv_counts
     if topology_analysis and topology_analysis.get("status") not in (None, "NO_TOPOLOGY"):
         evidence["topology"] = topology_analysis
+    if peer_data_truncated_ranks:
+        evidence["peer_data_truncated_ranks"] = sorted(peer_data_truncated_ranks)
     if per_rank and slow_ranks:
         evidence["rates"] = {str(rank): {"send_rate": per_rank[rank].get("send_rate"),
                                           "recv_rate": per_rank[rank].get("recv_rate")}
@@ -147,6 +154,12 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
     results = []
     for (comm_id, counter), rows in sorted(groups.items()):
         by_rank = defaultdict(lambda: {"send_count": 0, "recv_count": 0,
+                                       "send_count_by_protocol": [0, 0, 0],
+                                       "recv_count_by_protocol": [0, 0, 0],
+                                       "send_peers": {}, "recv_peers": {},
+                                       "send_protocol_peers": {}, "recv_protocol_peers": {},
+                                       "peer_overflow": False,
+                                       "peer_data_inconsistent": [],
                                        "channels": 0, "complete": True,
                                        "start_timestamp": None,
                                        "end_timestamp": None})
@@ -155,6 +168,45 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
             item = by_rank[rank]
             item["send_count"] += int(row.get("send_count", 0))
             item["recv_count"] += int(row.get("recv_count", 0))
+            for field in ("send_count_by_protocol", "recv_count_by_protocol"):
+                values = row.get(field)
+                if isinstance(values, list) and len(values) == 3:
+                    item[field] = [a + int(b) for a, b in zip(item[field], values)]
+            for field in ("send_peers", "recv_peers"):
+                for edge in row.get(field, []) or []:
+                    if not isinstance(edge, dict) or edge.get("peer") is None:
+                        continue
+                    peer = str(int(edge["peer"]))
+                    item[field][peer] = item[field].get(peer, 0) + int(edge.get("bytes", 0))
+            for field, peer_field in (("send_peer_protocol_bytes", "send_peers"),
+                                      ("recv_peer_protocol_bytes", "recv_peers")):
+                matrix = row.get(field)
+                peers = row.get(peer_field) or []
+                if isinstance(matrix, list):
+                    for proto, values in enumerate(matrix[:3]):
+                        proto_key = str(proto)
+                        proto_map = item[field.replace("_peer_protocol_bytes", "_protocol_peers")].setdefault(proto_key, {})
+                        for peer_index, value in enumerate(values or []):
+                            if peer_index >= len(peers):
+                                continue
+                            peer_key = str(int(peers[peer_index]["peer"]))
+                            proto_map[peer_key] = proto_map.get(peer_key, 0) + int(value)
+            item["peer_overflow"] = item["peer_overflow"] or bool(row.get("peer_overflow", False))
+            channel = int(row.get("channel", -1))
+            for field, peer_field, count_field in (
+                    ("send_peer_protocol_bytes", "send_peers", "send_count_by_protocol"),
+                    ("recv_peer_protocol_bytes", "recv_peers", "recv_count_by_protocol")):
+                matrix = row.get(field)
+                counts = row.get(count_field)
+                if not isinstance(matrix, list) or not isinstance(counts, list) or len(matrix) != 3 or len(counts) != 3:
+                    continue
+                observed = [sum(int(x) for x in values or []) for values in matrix]
+                expected = [int(x) for x in counts]
+                if observed != expected:
+                    item["peer_data_inconsistent"].append({
+                        "channel": channel, "direction": field.split("_")[0],
+                        "expected_by_protocol": expected,
+                        "observed_by_protocol": observed})
             item["channels"] += 1
             item["complete"] = item["complete"] and row.get("complete", True) is not False
             start = row.get("start_timestamp")
@@ -305,12 +357,43 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
             "COMM_SLOW" if slow_ranks else
             topology_analysis["status"] if topology_fault else
             "COUNT_MISMATCH" if count_mismatch and not topology_pending else
-            "TOPOLOGY_PENDING" if topology_pending else "OK")
+            "TOPOLOGY_PENDING" if topology_pending else
+            "PEER_DATA_TRUNCATED" if any(v["peer_overflow"] for v in by_rank.values()) else "OK")
+        peer_inconsistent = []
+        peer_inconsistent_channels = {}
+        for rank, value in by_rank.items():
+            if value["peer_data_inconsistent"]:
+                peer_inconsistent.append(rank)
+                peer_inconsistent_channels[str(rank)] = value["peer_data_inconsistent"]
+            peer_send = sum(value["send_peers"].values())
+            peer_recv = sum(value["recv_peers"].values())
+            if peer_send > value["send_count"] or peer_recv > value["recv_count"]:
+                peer_inconsistent.append(rank)
+            for proto, total in enumerate(value["send_count_by_protocol"]):
+                matrix = sum(int(x) for x in value["send_protocol_peers"].get(str(proto), {}).values())
+                if matrix != total and (matrix or total):
+                    peer_inconsistent.append(rank)
+            for proto, total in enumerate(value["recv_count_by_protocol"]):
+                matrix = sum(int(x) for x in value["recv_protocol_peers"].get(str(proto), {}).values())
+                if matrix != total and (matrix or total):
+                    peer_inconsistent.append(rank)
+        if peer_inconsistent and status in ("OK", "TOPOLOGY_PENDING"):
+            status = "PEER_DATA_INCONSISTENT"
         result = {"comm_id": comm_id, "counter": counter, "status": status,
                         "ranks": ranks, "expected_ranks": list(range(expected)),
                         "missing_ranks": missing, "incomplete_ranks": incomplete,
                         "slow_ranks": slow_ranks, "send_counts": send_values,
                         "recv_counts": recv_values, "per_rank": dict(by_rank),
+                        "send_counts_by_protocol": [sum(v["send_count_by_protocol"][i] for v in by_rank.values()) for i in range(3)],
+                        "recv_counts_by_protocol": [sum(v["recv_count_by_protocol"][i] for v in by_rank.values()) for i in range(3)],
+                        "send_bytes_by_peer": {str(rank): v["send_peers"] for rank, v in by_rank.items()},
+                        "recv_bytes_by_peer": {str(rank): v["recv_peers"] for rank, v in by_rank.items()},
+                        "send_protocol_bytes_by_peer": {str(rank): v["send_protocol_peers"] for rank, v in by_rank.items()},
+                        "recv_protocol_bytes_by_peer": {str(rank): v["recv_protocol_peers"] for rank, v in by_rank.items()},
+                        "peer_data_truncated_ranks": sorted(rank for rank, value in by_rank.items()
+                                                             if value["peer_overflow"]),
+                        "peer_data_inconsistent_ranks": sorted(set(peer_inconsistent)),
+                        "peer_data_inconsistent_channels": peer_inconsistent_channels,
                         "op_counts": op_counts,
                         "topology_edges": topology_edges,
                         "topology_groups": topology_groups,
@@ -323,7 +406,8 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                                   incomplete_ranks=incomplete, slow_ranks=slow_ranks,
                                   topology_analysis=topology_analysis,
                                   per_rank=by_rank, send_counts=send_values,
-                                  recv_counts=recv_values))
+                                  recv_counts=recv_values,
+                                  peer_data_truncated_ranks=result["peer_data_truncated_ranks"]))
         results.append(result)
     return results
 

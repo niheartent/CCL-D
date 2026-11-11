@@ -171,6 +171,44 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
         << ",\"protocol\":" << static_cast<int>(diag->protocol)
         << ",\"send_count\":" << diag->sendCount
         << ",\"recv_count\":" << diag->recvCount
+        << ",\"send_count_by_protocol\":[" << diag->sendCountByProto[0] << ","
+        << diag->sendCountByProto[1] << "," << diag->sendCountByProto[2] << "]"
+        << ",\"recv_count_by_protocol\":[" << diag->recvCountByProto[0] << ","
+        << diag->recvCountByProto[1] << "," << diag->recvCountByProto[2] << "]"
+        << ",\"send_peers\":[";
+  for (int i = 0; i < diag->sendPeerCount; ++i) {
+    if (i) g_log << ',';
+    g_log << "{\"peer\":" << diag->sendPeerIds[i]
+          << ",\"bytes\":" << diag->sendBytesByPeer[i] << "}";
+  }
+  g_log << "],\"recv_peers\":[";
+  for (int i = 0; i < diag->recvPeerCount; ++i) {
+    if (i) g_log << ',';
+    g_log << "{\"peer\":" << diag->recvPeerIds[i]
+          << ",\"bytes\":" << diag->recvBytesByPeer[i] << "}";
+  }
+  g_log << "],\"peer_overflow\":" << (diag->peerOverflow ? "true" : "false")
+        << ",\"send_peer_protocol_bytes\":[";
+  for (int proto = 0; proto < 3; ++proto) {
+    if (proto) g_log << ',';
+    g_log << '[';
+    for (int i = 0; i < diag->sendPeerCount; ++i) {
+      if (i) g_log << ',';
+      g_log << diag->sendBytesByProtocolPeer[proto][i];
+    }
+    g_log << ']';
+  }
+  g_log << "],\"recv_peer_protocol_bytes\":[";
+  for (int proto = 0; proto < 3; ++proto) {
+    if (proto) g_log << ',';
+    g_log << '[';
+    for (int i = 0; i < diag->recvPeerCount; ++i) {
+      if (i) g_log << ',';
+      g_log << diag->recvBytesByProtocolPeer[proto][i];
+    }
+    g_log << ']';
+  }
+  g_log << ']'
         << ",\"start_timestamp\":" << startTimestamp
         << ",\"end_timestamp\":" << endTimestamp
         << ",\"complete\":" << (complete ? "true" : "false");

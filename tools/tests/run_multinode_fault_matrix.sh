@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-VALIDATE="$ROOT/custom-rccl-dtk-26.04-ccl-d/tools/tests/run_multinode_ccld_validation.sh"
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+VALIDATE="$ROOT/tools/tests/run_multinode_ccld_validation.sh"
 BASE=${CCLD_MATRIX_DIR:-$ROOT/ccld-artifacts/fault-matrix-$(date -u +%Y%m%dT%H%M%SZ)}
 mkdir -p "$BASE"
 run_case() {

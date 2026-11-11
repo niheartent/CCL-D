@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-SIM="$ROOT/custom-rccl-dtk-26.04-ccl-d/tools/tests/simulate_ccld_device_fault.py"
-MON="$ROOT/custom-rccl-dtk-26.04-ccl-d/tools/ccld_monitor.py"
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+SIM="$ROOT/tools/tests/simulate_ccld_device_fault.py"
+MON="$ROOT/tools/ccld_monitor.py"
 OUT=${CCLD_SIM_DIR:-$ROOT/ccld-artifacts/fault-simulation-$(date -u +%Y%m%dT%H%M%SZ)}
 mkdir -p "$OUT"
 run_case() {

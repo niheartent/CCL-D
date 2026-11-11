@@ -14,10 +14,10 @@
 
 ```bash
 source /opt/dtk-26.04/env.sh
-cd /workspace/CCL-D/custom-rccl-dtk-26.04-ccl-d
+cd /workspace/CCL-D
 cmake -S . -B /workspace/CCL-D/ccld-artifacts/dtk-26.04-gfx936-try1/build \
   -DCMAKE_BUILD_TYPE=Release -DGPU_TARGETS=gfx936 -DBUILD_TESTS=OFF \
-  -DCMAKE_INSTALL_PREFIX=/workspace/CCL-D/ccld-artifacts/dtk-26.04-gfx936-try1/install
+  -DCMAKE_INSTALL_PREFIX=/workspace/CCL-D/ccld-artifacts/sample-probe-install
 cmake --build /workspace/CCL-D/ccld-artifacts/dtk-26.04-gfx936-try1/build -j 16
 cmake --install /workspace/CCL-D/ccld-artifacts/dtk-26.04-gfx936-try1/build
 ```
@@ -25,7 +25,7 @@ cmake --install /workspace/CCL-D/ccld-artifacts/dtk-26.04-gfx936-try1/build
 开启记录并运行 RCCL 单测。关键是通过 `LD_LIBRARY_PATH` 让 UT 加载 CCL-D 安装目录里的 `librccl.so`：
 
 ```bash
-export LD_LIBRARY_PATH=/workspace/CCL-D/ccld-artifacts/dtk-26.04-gfx936-try1/install/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/workspace/CCL-D/ccld-artifacts/sample-probe-install/lib:$LD_LIBRARY_PATH
 export RCCL_CCLD_ENABLE=1
 mkdir -p /tmp/ccld
 export RCCL_CCLD_LOG=/tmp/ccld/rank-{rank}.jsonl
@@ -40,7 +40,7 @@ python3 tools/ccld_monitor.py --once --all /tmp/ccld/rank-*.jsonl
 双节点验证使用 MPI 负责启动和广播 RCCL unique ID，RCCL communicator 使用全局 rank，日志写入共享 `/workspace`：
 
 ```bash
-export LD_LIBRARY_PATH=/workspace/CCL-D/ccld-artifacts/dtk-26.04-gfx936-try1/install/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/workspace/CCL-D/ccld-artifacts/sample-probe-install/lib:$LD_LIBRARY_PATH
 export RCCL_CCLD_ENABLE=1
 export RCCL_CCLD_LOG=/workspace/CCL-D/ccld-artifacts/multinode-logs/rank-{rank}.jsonl
 /opt/mpi/bin/mpirun --allow-run-as-root --host HPDPS-6,HPDPS-7 -np 2 \
@@ -69,7 +69,7 @@ python3 tools/ccld_monitor.py --once --all \
 单节点真实 RCCL 冒烟和单卡可触发告警测试：
 
 ```bash
-RCCL_CCLD_LIBDIR=/workspace/CCL-D/ccld-artifacts/dtk-26.04-gfx936-try1/install/lib \
+RCCL_CCLD_LIBDIR=/workspace/CCL-D/ccld-artifacts/sample-probe-install/lib \
   tools/tests/run_ccld_runtime_smoke.sh \
   /workspace/CCL-D/rccl-artifacts/dtk-26.04-gfx936/build/test/rccl-UnitTests
 ```

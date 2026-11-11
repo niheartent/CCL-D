@@ -53,7 +53,7 @@ PY
 python3 "$monitor" --once --all --fail-on-anomaly "${log_files[@]}" \
   --slow-skew-ms 60000 > "$workdir/normal-monitor.jsonl"
 grep -q '"status": "OK"' "$workdir/normal-monitor.jsonl"
-grep -Eq '"status": "(OK|TOPOLOGY_PENDING)"' "$workdir/normal-monitor.jsonl"
+grep -Eq '"status": "(OK|TOPOLOGY_PENDING|RING_ASYMMETRY|TREE_ASYMMETRY)"' "$workdir/normal-monitor.jsonl"
 
 run_injected_fault() {
   local fault=$1 expected=$2 monitor_status

@@ -47,9 +47,44 @@
       struct ncclCcldDiag* ccld = ncclShmem.comm.ccldDiag + ncclShmem.channelId; \
       __atomic_store_n(&ncclShmem.collTraceTail->diag.sendCount, 0ULL, __ATOMIC_RELAXED); \
       __atomic_store_n(&ncclShmem.collTraceTail->diag.recvCount, 0ULL, __ATOMIC_RELAXED); \
+      for (int proto = 0; proto < 3; ++proto) { \
+        __atomic_store_n(&ccld->sendCountByProto[proto], 0ULL, __ATOMIC_RELAXED); \
+        __atomic_store_n(&ccld->recvCountByProto[proto], 0ULL, __ATOMIC_RELAXED); \
+      } \
+      ccld->sendPeerCount = 0; ccld->recvPeerCount = 0; ccld->peerOverflow = 0; \
+      ccld->activeSendPeerCount = 0; ccld->activeRecvPeerCount = 0; \
+      for (int peer = 0; peer < CCLD_MAX_PEER_SLOTS; ++peer) { \
+        ccld->sendPeerIds[peer] = -1; ccld->recvPeerIds[peer] = -1; ccld->activeSendSlots[peer] = 0xff; ccld->activeRecvSlots[peer] = 0xff; \
+        __atomic_store_n(&ccld->sendBytesByPeer[peer], 0ULL, __ATOMIC_RELAXED); \
+        __atomic_store_n(&ccld->recvBytesByPeer[peer], 0ULL, __ATOMIC_RELAXED); \
+        for (int proto = 0; proto < 3; ++proto) { \
+          __atomic_store_n(&ccld->sendBytesByProtocolPeer[proto][peer], 0ULL, __ATOMIC_RELAXED); \
+          __atomic_store_n(&ccld->recvBytesByProtocolPeer[proto][peer], 0ULL, __ATOMIC_RELAXED); \
+        } \
+      } \
       ccld->channel = (uint16_t)ncclShmem.channelId; \
       ccld->treeUp = -1; ccld->treeDown[0] = -1; ccld->treeDown[1] = -1; ccld->treeDown[2] = -1; ccld->treeDepth = -1; \
       __atomic_store_n(&ccld->state, 0u, __ATOMIC_RELEASE); \
+    } \
+  } while (0)
+  #define CCLD_DIAG_SET_PEERS(SENDPEERS, NSEND, RECVPEERS, NRECV) do { \
+    if (tid == 0 && ncclShmem.comm.ccldDiag != nullptr) { \
+      struct ncclCcldDiag* ccld = ncclShmem.comm.ccldDiag + ncclShmem.channelId; \
+      ccld->activeSendPeerCount = 0; ccld->activeRecvPeerCount = 0; \
+      for (int peer = 0; peer < (NSEND); ++peer) { \
+        int slot = -1; for (int j = 0; j < ccld->sendPeerCount; ++j) if (ccld->sendPeerIds[j] == (SENDPEERS)[peer]) slot = j; \
+        if (slot < 0) { \
+          if (slot < 0 && ccld->sendPeerCount < CCLD_MAX_PEER_SLOTS) { slot = ccld->sendPeerCount++; ccld->sendPeerIds[slot] = (int16_t)(SENDPEERS)[peer]; } \
+        } \
+        if (slot >= 0 && ccld->activeSendPeerCount < CCLD_MAX_PEER_SLOTS) ccld->activeSendSlots[ccld->activeSendPeerCount++] = (uint8_t)slot; else ccld->peerOverflow = 1; \
+      } \
+      for (int peer = 0; peer < (NRECV); ++peer) { \
+        int slot = -1; for (int j = 0; j < ccld->recvPeerCount; ++j) if (ccld->recvPeerIds[j] == (RECVPEERS)[peer]) slot = j; \
+        if (slot < 0) { \
+          if (slot < 0 && ccld->recvPeerCount < CCLD_MAX_PEER_SLOTS) { slot = ccld->recvPeerCount++; ccld->recvPeerIds[slot] = (int16_t)(RECVPEERS)[peer]; } \
+        } \
+        if (slot >= 0 && ccld->activeRecvPeerCount < CCLD_MAX_PEER_SLOTS) ccld->activeRecvSlots[ccld->activeRecvPeerCount++] = (uint8_t)slot; else ccld->peerOverflow = 1; \
+      } \
     } \
   } while (0)
   #define CCLD_DIAG_ADD(SEND, RECV) do { \
@@ -60,11 +95,27 @@
         struct ncclCcldDiag* ccld = ncclShmem.comm.ccldDiag + ncclShmem.channelId; \
         if ((SEND) != 0) __atomic_fetch_add(&ccld->sendCount, (uint64_t)(SEND), __ATOMIC_RELAXED); \
         if ((RECV) != 0) __atomic_fetch_add(&ccld->recvCount, (uint64_t)(RECV), __ATOMIC_RELAXED); \
+        const int proto = (ccld->protocol < 3) ? ccld->protocol : -1; \
+        if (proto >= 0) { \
+          if ((SEND) != 0) __atomic_fetch_add(&ccld->sendCountByProto[proto], (uint64_t)(SEND), __ATOMIC_RELAXED); \
+          if ((RECV) != 0) __atomic_fetch_add(&ccld->recvCountByProto[proto], (uint64_t)(RECV), __ATOMIC_RELAXED); \
+        } \
+        for (int peer = 0; peer < ccld->activeSendPeerCount; ++peer) \
+          if ((SEND) != 0) __atomic_fetch_add(&ccld->sendBytesByPeer[ccld->activeSendSlots[peer]], (uint64_t)(SEND) / ccld->activeSendPeerCount, __ATOMIC_RELAXED); \
+        for (int peer = 0; peer < ccld->activeRecvPeerCount; ++peer) \
+          if ((RECV) != 0) __atomic_fetch_add(&ccld->recvBytesByPeer[ccld->activeRecvSlots[peer]], (uint64_t)(RECV) / ccld->activeRecvPeerCount, __ATOMIC_RELAXED); \
+        if (proto >= 0) { \
+          for (int peer = 0; peer < ccld->activeSendPeerCount; ++peer) \
+            if ((SEND) != 0) __atomic_fetch_add(&ccld->sendBytesByProtocolPeer[proto][ccld->activeSendSlots[peer]], (uint64_t)(SEND) / ccld->activeSendPeerCount, __ATOMIC_RELAXED); \
+          for (int peer = 0; peer < ccld->activeRecvPeerCount; ++peer) \
+            if ((RECV) != 0) __atomic_fetch_add(&ccld->recvBytesByProtocolPeer[proto][ccld->activeRecvSlots[peer]], (uint64_t)(RECV) / ccld->activeRecvPeerCount, __ATOMIC_RELAXED); \
+        } \
       } \
     } \
   } while (0)
 #else
   #define CCLD_DIAG_RESET()
+  #define CCLD_DIAG_SET_PEERS(SENDPEERS, NSEND, RECVPEERS, NRECV)
   #define CCLD_DIAG_ADD(SEND, RECV)
 #endif
 

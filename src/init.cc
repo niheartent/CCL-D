@@ -286,6 +286,27 @@ void *ncclCommThreadMain(void *arg) {
           snapshot.opCount = __atomic_load_n(&diag->opCount, __ATOMIC_RELAXED);
           snapshot.sendCount = __atomic_load_n(&diag->sendCount, __ATOMIC_RELAXED);
           snapshot.recvCount = __atomic_load_n(&diag->recvCount, __ATOMIC_RELAXED);
+          for (int proto = 0; proto < 3; ++proto) {
+            snapshot.sendCountByProto[proto] = __atomic_load_n(&diag->sendCountByProto[proto], __ATOMIC_RELAXED);
+            snapshot.recvCountByProto[proto] = __atomic_load_n(&diag->recvCountByProto[proto], __ATOMIC_RELAXED);
+          }
+          snapshot.sendPeerCount = diag->sendPeerCount;
+          snapshot.recvPeerCount = diag->recvPeerCount;
+          snapshot.peerOverflow = diag->peerOverflow;
+          snapshot.activeSendPeerCount = 0;
+          snapshot.activeRecvPeerCount = 0;
+          for (int peer = 0; peer < CCLD_MAX_PEER_SLOTS; ++peer) {
+            snapshot.sendPeerIds[peer] = diag->sendPeerIds[peer];
+            snapshot.recvPeerIds[peer] = diag->recvPeerIds[peer];
+            snapshot.activeSendSlots[peer] = 0xff;
+            snapshot.activeRecvSlots[peer] = 0xff;
+            snapshot.sendBytesByPeer[peer] = __atomic_load_n(&diag->sendBytesByPeer[peer], __ATOMIC_RELAXED);
+            snapshot.recvBytesByPeer[peer] = __atomic_load_n(&diag->recvBytesByPeer[peer], __ATOMIC_RELAXED);
+            for (int proto = 0; proto < 3; ++proto) {
+              snapshot.sendBytesByProtocolPeer[proto][peer] = __atomic_load_n(&diag->sendBytesByProtocolPeer[proto][peer], __ATOMIC_RELAXED);
+              snapshot.recvBytesByProtocolPeer[proto][peer] = __atomic_load_n(&diag->recvBytesByProtocolPeer[proto][peer], __ATOMIC_RELAXED);
+            }
+          }
           snapshot.startTimestamp = __atomic_load_n(&diag->startTimestamp, __ATOMIC_RELAXED);
           snapshot.endTimestamp = __atomic_load_n(&diag->endTimestamp, __ATOMIC_RELAXED);
           snapshot.state = state;

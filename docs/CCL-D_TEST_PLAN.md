@@ -53,6 +53,8 @@
 
 分别统计 Simple、LL、LL128 的 send/recv count、bytes、速率、rank 差异及 channel/peer 归属，重点检查单一协议异常而总量仍接近的情况。结果必须明确显示协议名称，不能只展示总 send/recv。
 
+peer 采集使用每 channel 的有限槽位；记录中必须包含 peer 槽溢出状态。出现溢出时结果标为 `PEER_DATA_TRUNCATED`，该轮不能作为拓扑和流量完整性通过样本，不能将缺失的 peer 计数当作 0。
+
 ## 4. RCCL 多算子和长期覆盖
 
 在合成故障通过后，执行 AllReduce、AllGather、ReduceScatter、Broadcast、AllToAll、Ring、Tree、多 communicator、多 stream 和 20～1000 轮压力测试。检查每条路径的 enqueue、sample、completion、算法、协议、channel、拓扑字段，以及计数器回退、slot 泄漏、日志截断和 monitor 超时治理。

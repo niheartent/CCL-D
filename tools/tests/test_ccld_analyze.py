@@ -110,6 +110,48 @@ class CcldAnalyzeTest(unittest.TestCase):
                  "rank": 1, "nranks": 2, "send_count": 4, "recv_count": 8}]
         self.assertEqual(analyze_completions(rows)[0]["status"], "COUNT_MISMATCH")
 
+    def test_completion_aggregates_protocol_counts(self):
+        rows = [{"phase": "complete", "comm_id": "abcd", "counter": 30,
+                 "rank": 0, "nranks": 1, "send_count": 12, "recv_count": 12,
+                 "send_count_by_protocol": [2, 3, 7],
+                 "recv_count_by_protocol": [1, 4, 7], "complete": True}]
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["send_counts_by_protocol"], [2, 3, 7])
+        self.assertEqual(result["recv_counts_by_protocol"], [1, 4, 7])
+        self.assertEqual(result["per_rank"][0]["send_count_by_protocol"], [2, 3, 7])
+
+    def test_completion_aggregates_peer_bytes(self):
+        rows = [{"phase": "complete", "comm_id": "abcd", "counter": 3,
+                 "rank": 0, "nranks": 2, "channel": 0,
+                 "send_count": 12, "recv_count": 8,
+                 "send_peers": [{"peer": 1, "bytes": 12}],
+                 "recv_peers": [{"peer": 1, "bytes": 8}]}]
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["send_bytes_by_peer"]["0"]["1"], 12)
+        self.assertEqual(result["recv_bytes_by_peer"]["0"]["1"], 8)
+
+    def test_peer_overflow_is_not_reported_as_clean(self):
+        row = {"phase": "complete", "comm_id": "abcd", "counter": 3,
+               "rank": 0, "nranks": 1, "channel": 0,
+               "send_count": 0, "recv_count": 0, "peer_overflow": True}
+        result = analyze_completions([row])[0]
+        self.assertEqual(result["status"], "PEER_DATA_TRUNCATED")
+        self.assertEqual(result["peer_data_truncated_ranks"], [0])
+
+    def test_peer_protocol_total_mismatch_is_reported(self):
+        row = {"phase": "complete", "comm_id": "abcd", "counter": 3,
+               "rank": 0, "nranks": 1, "channel": 0,
+               "send_count": 8, "recv_count": 8,
+               "send_count_by_protocol": [8, 0, 0],
+               "recv_count_by_protocol": [8, 0, 0],
+               "send_peers": [{"peer": 1, "bytes": 4}],
+               "recv_peers": [{"peer": 1, "bytes": 4}],
+               "send_peer_protocol_bytes": [[4], [0], [0]],
+               "recv_peer_protocol_bytes": [[4], [0], [0]]}
+        result = analyze_completions([row])[0]
+        self.assertEqual(result["status"], "PEER_DATA_INCONSISTENT")
+        self.assertEqual(result["peer_data_inconsistent_ranks"], [0])
+
     def test_incomplete_completion_is_detected(self):
         rows = [{"phase": "complete", "comm_id": "abcd", "counter": 3,
                  "rank": 0, "nranks": 2, "send_count": 8, "recv_count": 8,
