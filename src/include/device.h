@@ -236,6 +236,7 @@ struct alignas(16) ncclDevWorkP2p {
   int sendRank, recvRank;
   uint64_t sendOpCount, recvOpCount;
   uint32_t sendCcldKernelIndex, recvCcldKernelIndex;
+  uint64_t sendCcldCounter, recvCcldCounter;
   // From the part index, nP2pChannels, and channelBase the device code can
   // calculate which part of the transfer a channel is responsible for.
   uint8_t nP2pChannels; // Always equal to comm->p2pnChannels
@@ -310,6 +311,7 @@ struct alignas(16) ncclDevWorkColl {
   uint64_t redOpArg;
   uint64_t opCount;
   uint32_t ccldKernelIndex;
+  uint64_t ccldCounter;
   uint8_t algorithm;
   uint8_t protocol;
   uint16_t reserved;
@@ -421,6 +423,7 @@ static_assert(sizeof(struct ncclProf) == 256, "ncclProf must have size of 256");
 struct alignas(16) ncclCcldDiag {
 #define CCLD_MAX_PEER_SLOTS NCCL_MAX_ARITY
   uint64_t opCount;
+  uint64_t ccldCounter;
   uint64_t droppedBatches;
   uint64_t sendCount;
   uint64_t recvCount;

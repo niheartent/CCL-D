@@ -46,3 +46,16 @@
 4. 所有相关 plan/work 的完成通知驱动最终输出和回收；
 5. slot 忙和 callback 缺失分别进入不同状态；
 6. 单元测试先覆盖资源耗尽、跨 channel 聚合、重复回收和销毁清理，再进行 HIP 编译。
+
+## 4. 运行中采样与最终收口
+
+采用“运行中按 channel 采样、结束时按 TraceID 收口”的两阶段处理：
+
+- body 正在运行时，diagnostic thread 按 channel 读取 pinned 计数，输出 sendRate/recvRate 和局部进展；
+- channel/kernel 完成只更新该 TraceID 的完成集合，不立即回收 body；
+- host 记录该 TraceID 涉及的全部 plan/work/channel；
+- 所有相关完成通知到齐后，输出一次 operation-level 最终结果；
+- 诊断线程消费最终 body 后立即进入 `CONSUMED → FREE`；
+- body 不足时只产生显式观测缺口，不能阻塞通信，也不能把该样本当作正常诊断通过。
+
+这样既保留材料要求的高频 channel 指标，又避免多 plan/channel 被拆成多个操作身份。
