@@ -2,6 +2,34 @@
 
 CCL-D 将 RCCL 集合通信中的 **hang、slow、参数不一致和拓扑推进异常** 转成可追踪证据：`comm_id + counter/trace_id + rank + 状态 + 证据`。它适用于当前 DTK 26.04 / `gfx936` 环境，支持单节点和已验证的双节点 8 rank 运行。
 
+## Requirements
+
+当前版本按以下环境构建和验证。复用已编译 RCCL 时，目标服务器应尽量保持这些版本和路径一致。
+
+| 项目 | 要求/已验证配置 |
+|---|---|
+| 容器工作目录 | `/workspace/CCL-D`，源码、独立 build、install 和实验产物均位于该目录下 |
+| GPU/DCU 架构 | `gfx936`；CMake 使用 `-DGPU_TARGETS=gfx936` |
+| DTK/HIP | `/opt/dtk-26.04`；`hipcc` 使用 dcc 25.10.0、Clang 17.0.0 |
+| RCCL 安装 | 独立前缀 `/workspace/CCL-D/ccld-artifacts/sample-probe-install`，不覆盖系统 RCCL |
+| MPI | Open MPI 5.0.3，入口 `/opt/mpi/bin/mpirun`、编译器 `/opt/mpi/bin/mpicxx` |
+| UCX | `/opt/ucx-1.16.0`，运行时必须优先使用 `/opt/ucx-1.16.0/lib`；系统 `/opt/ucx` 保留作旧版本 |
+| 操作系统/内核 | Linux x86_64；已验证节点为 HPDPS-6/7，内核 5.15.0-25-generic |
+| 双节点布局 | HPDPS-6 (`10.18.91.6`) 与 HPDPS-7 (`10.18.91.7`)，SSH 端口 `2234`，每节点 4 rank，共 8 rank |
+| 共享存储 | 两节点共享 `/workspace`，无需复制源码、RCCL 安装和测试程序 |
+
+初始化环境时确保自定义 UCX 和 RCCL 在动态库搜索路径前面：
+
+```bash
+cd /workspace/CCL-D
+source /opt/dtk-26.04/env.sh
+export RCCL_PREFIX=$PWD/ccld-artifacts/sample-probe-install
+export UCX_PREFIX=/opt/ucx-1.16.0
+export LD_LIBRARY_PATH=$RCCL_PREFIX/lib:$UCX_PREFIX/lib:/opt/hyhal/lib:/opt/dtk/lib:/opt/dtk/hip/lib:/opt/mpi/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+```
+
+如果目标服务器同样是 `gfx936`，并且使用相同容器、DTK/HIP、RCCL ABI、驱动和通信栈，可以复用 `sample-probe-install`，不必重新编译 RCCL。首次使用仍应运行多算子 slot 回归，确认设备拓扑、UCX 和 MPI 配置可用。若 GPU 架构、DTK/ROCm、编译器 ABI 或运行时路径发生变化，应重新构建并安装。
+
 ## 工作闭环
 
 ```text
@@ -64,6 +92,19 @@ python3 tools/ccld_monitor.py --once --fail-on-anomaly \
 持续多轮偏慢检查：`--slow-window 5`。窗口模式只用于过滤单轮抖动，仍然是相对速率证据。
 运行中采样停滞检查默认启用，连续 3 个采样间隔无进展且同节点对照 rank 仍有进展时输出 `COMM_STALLED`；可用 `--stagnant-intervals N` 调整间隔数。 completion 事件还包含 `send_count_by_protocol` 和 `recv_count_by_protocol`，数组顺序为 LL、LL128、Simple。
 
+## 多算子 slot 回归
+
+同一份测试程序验证 AllGather、ReduceScatter、Broadcast、AllToAll 与环形 P2P Send/Recv 的数据正确性，并在每轮操作后同步，便于将数据面失败定位到具体算子。RCCL 只需构建一次，测试程序单独编译：
+
+```bash
+tools/tests/build_multinode_collective_slot_regression.sh
+CCLD_OUT_DIR=$PWD/ccld-artifacts/slot-regression-final \
+CCLD_ITERS=20 CCLD_COUNT=4096 \
+tools/tests/run_multinode_collective_slot_regression.sh
+```
+
+实验脚本保存每个 rank 的 JSONL、monitor 输出和运行日志。测试设计与 slot 生命周期经验见 [docs/CCL-D_TEST_PLAN.md](docs/CCL-D_TEST_PLAN.md)。
+
 ## 双节点验证
 
 已验证节点为 `HPDPS-6 (10.18.91.6)` 与 `HPDPS-7 (10.18.91.7)`，SSH 端口 `2234`，每节点 4 rank，共 8 rank。共享 `/workspace`，不需要复制安装和日志。运行脚本：
@@ -99,4 +140,4 @@ tools/tests/run_ccld_runtime_smoke.sh \
   /workspace/CCL-D/rccl-artifacts/dtk-26.04-gfx936/build/test/rccl-UnitTests
 ```
 
-当前 Python 单元测试共 27 项通过。构建、安装和实验结果统一保存在 `ccld-artifacts/`；源码目录中的修改不会覆盖已有独立安装产物。
+当前 Python 单元测试以实际运行结果为准（最近一次 34 项通过）。构建、安装和实验结果统一保存在 `ccld-artifacts/`；源码目录中的修改不会覆盖已有独立安装产物。

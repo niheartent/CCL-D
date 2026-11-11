@@ -167,7 +167,6 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
         << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
         << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
         << ",\"channel\":" << diag->channel
-        << ",\"dropped_batches\":" << diag->droppedBatches
         << ",\"algorithm\":" << static_cast<int>(diag->algorithm)
         << ",\"protocol\":" << static_cast<int>(diag->protocol)
         << ",\"send_count\":" << diag->sendCount

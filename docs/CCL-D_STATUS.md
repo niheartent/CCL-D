@@ -16,9 +16,10 @@
 | MPI 双节点通信 | 完成 | 2 rank、8 rank AllReduce |
 | RCCL/CCL-D 8 rank | 完成 | 每节点 4 rank，结果 36 |
 | 多轮通信 | 基础完成 | 20 轮、4096 元素通过 |
+| AllGather/ReduceScatter/Broadcast/AllToAll/P2P slot 回归 | 覆盖程序就绪，待新版库验证 | 源码含五类数据面结果校验；P2P batch 元数据修正正在编译，需新库双节点实测后确认 slot 与 monitor |
 | 正常 monitor | 完成 | exit 0 |
 | 远端 rank 故障检测 | 基础完成 | rank 7 第 10 轮可检出 |
-| Python analyzer 单测 | 完成 | 31 项通过 |
+| Python analyzer 单测 | 完成 | 最近一次 34 项通过 |
 
 ## CCL-D 能力对照
 

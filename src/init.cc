@@ -286,7 +286,6 @@ void *ncclCommThreadMain(void *arg) {
         } else if (state == 2) {
           struct ncclCcldDiag snapshot;
           snapshot.opCount = __atomic_load_n(&diag->opCount, __ATOMIC_RELAXED);
-          snapshot.droppedBatches = __atomic_load_n(&diag->droppedBatches, __ATOMIC_RELAXED);
           snapshot.sendCount = __atomic_load_n(&diag->sendCount, __ATOMIC_RELAXED);
           snapshot.recvCount = __atomic_load_n(&diag->recvCount, __ATOMIC_RELAXED);
           for (int proto = 0; proto < 3; ++proto) {

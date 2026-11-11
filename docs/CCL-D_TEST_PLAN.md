@@ -55,11 +55,24 @@
 
 peer 采集使用每 channel 的有限槽位；记录中必须包含 peer 槽溢出状态。出现溢出时结果标为 `PEER_DATA_TRUNCATED`，该轮不能作为拓扑和流量完整性通过样本，不能将缺失的 peer 计数当作 0。
 
-诊断槽按 `channel × opCount % CCLD_DIAG_SLOTS` 选择，同一 CTA 内每个 work batch 独立开始和提交。slot 尚未被 host collector 消费时，新 batch 不覆盖旧记录，而是增加 `dropped_batches`；monitor 将其报告为 `DIAGNOSTIC_BATCH_DROPPED`。slot 数量和丢弃计数必须在压力测试中一起验收。
+诊断槽按 `channel × opCount % CCLD_DIAG_SLOTS` 选择，同一 CTA 内每个 work batch 独立开始和提交。压力测试需要检查 slot 是否被后续 batch 覆盖，以及每个 batch 的协议和 peer 明细是否与总计数一致。
 
 ## 4. RCCL 多算子和长期覆盖
 
 在合成故障通过后，执行 AllReduce、AllGather、ReduceScatter、Broadcast、AllToAll、Ring、Tree、多 communicator、多 stream 和 20～1000 轮压力测试。检查每条路径的 enqueue、sample、completion、算法、协议、channel、拓扑字段，以及计数器回退、slot 泄漏、日志截断和 monitor 超时治理。
+
+### Slot 回归实现经验
+
+- **以 batch 为粒度记录**：一个 channel/kernel batch 内可能有多个 work item；slot 不能只在 kernel 入口初始化一次。每个 work batch 都应从自己的 work 元数据取 `opCount`、算法和协议，并独立提交 completion。
+- **先分辨 work 类型再解释字段**：collective work 与 `ncclDevWorkP2p` 的布局和计数语义不同。P2P 需要从 send/recv 的 opCount、协议标记和 peer 字段取证，不能把其内存强转成 collective 结构。
+- **slot 只负责暂存，不是事件身份**：跨 rank 聚合使用 communicator 与 opCount/trace_id；channel、peer、protocol 是该事件的观测维度。循环复用 slot 时必须验证记录绑定仍指向正确 batch。
+- **将数据正确性与插桩正确性分开验**：每类 collective 用 rank 编码的输入验证输出；另检查每个 completion 的计数、协议、peer 明细和 overflow。零填充只能证明调用返回，不能证明数据分发正确。
+- **P2P 使用对端配对语义**：Send 和 Recv 的 rank 预期不同，不能拿它们套 collective 的 root/参数一致性比较。数据面按环形邻居验证，日志按 send-peer/recv-peer 成对核对。
+- **一次改完再编译**：先合并 RCCL 共享 batch/slot 修复和统一回归程序，再执行一次 gfx936 RCCL 构建、安装和五算子双节点矩阵。路径失败后才对对应路径增量修复，避免每个算子触发一次完整 hipcc 链接。
+
+当前已增加统一多算子 slot 回归程序源码 `tools/tests/multinode_collective_slot_regression.cpp`，编译产物为 `ccld-artifacts/multinode-test/multinode_collective_slot_regression`，一次运行覆盖 AllGather、ReduceScatter、Broadcast、AllToAll 和 P2P Send/Recv。脚本为 `tools/tests/run_multinode_collective_slot_regression.sh`，使用当前独立 RCCL 安装，不为每个 collective 单独编译 RCCL。
+
+该回归统一编译一次、顺序覆盖五类数据面操作。经验是：先在 RCCL 层统一修复 batch/slot 生命周期，再复用同一安装前缀编译一个回归程序；不要为每个 collective 单独编译 RCCL。普通 collective 使用统一 monitor 判定；P2P 采用独立 Send/Recv 对端语义，不能套用普通 collective 的 root/rank 对照规则。
 
 ## 5. 真实训练任务
 

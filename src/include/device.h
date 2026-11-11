@@ -308,7 +308,6 @@ struct alignas(16) ncclDevWorkColl {
   };
   uint64_t redOpArg;
   uint64_t opCount;
-  uint64_t droppedBatches;
   uint8_t algorithm;
   uint8_t protocol;
   uint16_t reserved;
