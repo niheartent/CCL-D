@@ -480,8 +480,8 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                                 if value["send_rate"] < baseline * slow_rate_ratio)
         topology_fault = topology_analysis["status"] in ("RING_ASYMMETRY", "TREE_ASYMMETRY")
         dropped = sorted(rank for rank, value in by_rank.items() if value["dropped_batches"] > 0)
-        status = "MISSING_COMPLETION" if missing or incomplete else (
-            "DIAGNOSTIC_BATCH_DROPPED" if dropped else
+        status = "DIAGNOSTIC_BATCH_DROPPED" if dropped else (
+            "MISSING_COMPLETION" if missing or incomplete else
             "COMM_SLOW" if slow_ranks else
             topology_analysis["status"] if topology_fault else
             "COUNT_MISMATCH" if count_mismatch and not topology_pending else
