@@ -44,6 +44,16 @@
 
 ## 当前明确问题
 
+## 2026-11-11 完整 gfx936 构建与双节点回归
+
+- 完整 Release 构建成功：`ccld-artifacts/full-gfx936/build`。
+- 独立安装成功：`ccld-artifacts/full-gfx936/install/lib/librccl.so.1.0`。
+- 全量 device LTO/link 用时约 1809 秒（约 30 分钟）；窄函数构建仍用于快速编译检查。
+- 8 rank、HPDPS-6/HPDPS-7、AllGather/ReduceScatter/Broadcast/AllToAll/P2P 数据面测试通过。
+- host record pool 单测通过，Python analyzer 39 项通过。
+- 新鲜双节点诊断日志仍出现 `RESOURCE_EXHAUSTED`：2 轮测试记录 208 条资源耗尽、1892 条 complete。该结果符合“观测资源耗尽时通信继续”的安全策略，但说明 operation-level body 回收尚未接入，不能作为诊断完整验收通过。
+- 后续必须接入 plan/work/channel 的完成聚合和最终回收，再重复同一回归确认资源耗尽归零或仅在明确超载场景出现。
+
 上一轮五算子数据面回归中观察到诊断记录丢失。随后加入了 `dropped_batches` 记录，但这只能把观测丢失显式化，不能证明生命周期正确。问题根因尚未完成材料级修复：当前实现仍把物理 slot 和操作身份混用，且没有完成 `kernelIndex` LRU、callback 回收和多 work 归属。
 
 源码审计还确认：`rcclCcldRecordEnqueue()` 目前在 `ncclEnqueueCheck()` 的 `taskAppend()` 之前执行，而 `comm->opCount` 的推进发生在 proxy 提交路径。因而不能直接把当前 enqueue 日志中的 `comm->opCount` 当作已经稳定分配的材料级操作 counter；分组调用和 plan 内多个 task 的归属必须先在 host planner 侧明确。
