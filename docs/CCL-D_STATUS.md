@@ -21,11 +21,11 @@
 
 | 设计要求 | 当前状态 | 不能默认完成的原因 |
 |---|---|---|
-| `commId + counter + 扩展位` 作为操作级 TraceID | 部分实现 | 当前 host/device 使用 RCCL canonical opCount，但还没有完整操作级 LRU record |
-| `kernelIndex` LRU 物理索引 | 未实现 | 当前代码使用 `channel × (opCount % CCLD_DIAG_SLOTS)`，这不是材料中的 LRU 模型 |
-| pinned memory body 按操作/channel 保存计数 | 部分实现 | 有 pinned 诊断区域和 channel 计数，但没有材料规定的 body 分配、占用和回收协议 |
+| `commId + counter + 扩展位` 作为操作级 TraceID | 部分实现 | host 已分配独立 `ccldCounter`，并贯穿 collective/P2P work 与 device diag；跨 plan 聚合和最终回收仍在接入 |
+| `kernelIndex` LRU 物理索引 | 部分实现 | host RecordPool 已实现不覆盖活动 body 的状态机并分配物理索引；尚未完成 planner 级多 plan 注册和最终回收接线 |
+| pinned memory body 按操作/channel 保存计数 | 部分实现 | pinned 区域和 channel 计数已存在，device 不再使用 `opCount % slot`；body 生命周期仍需由 plan/work 完成事件收口 |
 | diagnostic thread 周期采样 | 部分实现 | 有轮询 sample，当前默认 10 ms；材料正文给出默认约 200 微秒，示例又使用 1 ms 精度，必须通过实测确定本实现的有效口径 |
-| kernel host callback 通知结束 | 未验证 | 当前主要依赖诊断线程轮询 complete，尚未证明 callback/回收链路符合设计 |
+| kernel host callback 通知结束 | 部分实现 | 诊断线程已能消费 complete body；planner/reclaimer 的 operation-level callback 聚合尚未完成 |
 | 多 work/batch 归属同一操作 TraceID | 未完成 | 当前 kernel 侧不能证明 batch 内所有 work 都正确归入同一操作记录 |
 | AllToAll 保留父操作身份 | 未完成 | RCCL 当前路径展开为 P2P Send/Recv，尚未记录 parent operation |
 | Simple/LL/LL128 精确计数点 | 未完成 | 材料要求不同 primitive 位置，当前统一计数宏尚未逐路径对照验证 |

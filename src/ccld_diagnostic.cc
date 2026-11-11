@@ -117,6 +117,7 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
   uint32_t kernelIndex = UINT32_MAX;
   const bool reserved = poolIt->second->reserve(counter, 1, &kernelIndex) == rccl_ccld::ReserveResult::Reserved;
   if (!reserved) kernelIndex = UINT32_MAX;
+  if (reserved) poolIt->second->markRunning(kernelIndex);
   info->ccldKernelIndex = kernelIndex;
   if (inject && std::string(fault) == "op_mismatch") op = "CCLD_INJECTED_OP_MISMATCH";
   if (inject && std::string(fault) == "size_mismatch") {
@@ -159,12 +160,12 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
   if (!g_log) return;
   std::ostringstream traceId;
   traceId << std::hex << std::setw(16) << std::setfill('0') << comm->commHash
-          << ':' << std::dec << diag->opCount;
+          << ':' << std::dec << diag->ccldCounter;
   // Diagnostic-only fault modes make hang/slow handling reproducible inside
   // the container without touching GPU data movement.  They deliberately
   // alter only the emitted evidence for a selected rank/counter.
   const char* fault = std::getenv("RCCL_CCLD_FAULT");
-  const bool inject = fault && faultSelected(comm, diag->opCount);
+  const bool inject = fault && faultSelected(comm, diag->ccldCounter);
   const std::string faultName = fault ? fault : "";
   bool complete = true;
   uint64_t startTimestamp = diag->startTimestamp;
@@ -178,7 +179,7 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
   g_log << "{\"schema\":1,\"phase\":\"complete\",\"timestamp_ns\":" << nowNs()
         << ",\"trace_id\":\"" << traceId.str()
         << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
-        << "\",\"counter\":" << diag->opCount
+        << "\",\"counter\":" << diag->ccldCounter
         << ",\"dropped_batches\":" << diag->droppedBatches
         << ",\"op_count\":" << diag->opCount
         << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks

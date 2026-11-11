@@ -268,7 +268,7 @@ void *ncclCommThreadMain(void *arg) {
         const uint32_t state = __atomic_load_n(&diag->state, __ATOMIC_ACQUIRE);
         if (state == 1) {
           if (sampleNs - lastCcldSampleNs[diagIndex] >= sampleIntervalNs) {
-            const uint64_t opCount = __atomic_load_n(&diag->opCount, __ATOMIC_RELAXED);
+            const uint64_t ccldCounter = __atomic_load_n(&diag->ccldCounter, __ATOMIC_RELAXED);
             const uint64_t sends = __atomic_load_n(&diag->sendCount, __ATOMIC_RELAXED);
             const uint64_t recvs = __atomic_load_n(&diag->recvCount, __ATOMIC_RELAXED);
             const bool reset = lastCcldSampleNs[diagIndex] != 0 &&
@@ -277,7 +277,7 @@ void *ncclCommThreadMain(void *arg) {
                 sampleNs - lastCcldSampleNs[diagIndex] : 0;
             const uint64_t sendDelta = reset || !lastCcldSampleNs[diagIndex] ? 0 : sends - lastCcldSend[diagIndex];
             const uint64_t recvDelta = reset || !lastCcldSampleNs[diagIndex] ? 0 : recvs - lastCcldRecv[diagIndex];
-            rcclCcldRecordDeviceSample(comm, opCount, channel, sends, recvs, sampleNs,
+            rcclCcldRecordDeviceSample(comm, ccldCounter, channel, sends, recvs, sampleNs,
                                        sendDelta, recvDelta, elapsed, reset);
             lastCcldSampleNs[diagIndex] = sampleNs;
             lastCcldSend[diagIndex] = sends;
@@ -286,6 +286,7 @@ void *ncclCommThreadMain(void *arg) {
         } else if (state == 2) {
           struct ncclCcldDiag snapshot;
           snapshot.opCount = __atomic_load_n(&diag->opCount, __ATOMIC_RELAXED);
+          snapshot.ccldCounter = __atomic_load_n(&diag->ccldCounter, __ATOMIC_RELAXED);
           snapshot.droppedBatches = __atomic_load_n(&diag->droppedBatches, __ATOMIC_RELAXED);
           snapshot.sendCount = __atomic_load_n(&diag->sendCount, __ATOMIC_RELAXED);
           snapshot.recvCount = __atomic_load_n(&diag->recvCount, __ATOMIC_RELAXED);

@@ -571,6 +571,7 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
     devWork.pivotA2ANumBiRings = comm->topo->pivotA2ANumBiRings;
     devWork.opCount = task->opCount;
     devWork.ccldKernelIndex = task->ccldKernelIndex;
+    devWork.ccldCounter = task->ccldCounter;
     devWork.algorithm = (uint8_t)task->algorithm;
     devWork.protocol = (uint8_t)task->protocol;
 
@@ -1014,6 +1015,8 @@ static ncclResult_t addP2pToPlan(
   work->sendOpCount = sendOpCount;
   work->sendCcldKernelIndex = sendP2p ? sendP2p->ccldKernelIndex : UINT32_MAX;
   work->recvCcldKernelIndex = recvP2p ? recvP2p->ccldKernelIndex : UINT32_MAX;
+  work->sendCcldCounter = sendP2p ? sendP2p->ccldCounter : UINT64_MAX;
+  work->recvCcldCounter = recvP2p ? recvP2p->ccldCounter : UINT64_MAX;
   work->nRecvChannels = nChannels[0];
   work->recvProtoLL = protoLL[0];
   work->recvRegistered = registered[0];
@@ -2287,6 +2290,7 @@ static ncclResult_t taskAppend(struct ncclComm* comm, struct ncclInfo* info) {
     p2p->bytes = nBytes;
     p2p->opCount = comm->opCount;
     p2p->ccldKernelIndex = info->ccldKernelIndex;
+    p2p->ccldCounter = info->ccldCounter;
     p2p->UserProto = info->UserProto;
     p2p->UserChannels = info->UserChannels;
     p2p->parentP2pType = P2pInvalid;
@@ -2406,6 +2410,7 @@ static ncclResult_t taskAppend(struct ncclComm* comm, struct ncclInfo* info) {
       t->sliceSteps = info->sliceSteps;
       t->opCount = comm->opCount;
       t->ccldKernelIndex = info->ccldKernelIndex;
+      t->ccldCounter = info->ccldCounter;
 
       planner->nTasksColl += 1;
       ncclTaskCollSorterInsert(&planner->collSorter, t, t->trafficBytes);

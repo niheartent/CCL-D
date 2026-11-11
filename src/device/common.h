@@ -617,6 +617,7 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
     if (tid == 0) __insert_timestamp(__LINE__);
     if (tid == 0 && ncclShmem.comm.ccldDiag != nullptr) {
       uint64_t batchOpCount = 0;
+      uint64_t batchCcldCounter = UINT64_MAX;
       uint32_t batchKernelIndex = UINT32_MAX;
       uint8_t batchAlgorithm = 0xff;
       uint8_t batchProtocol = 0xff;
@@ -624,11 +625,13 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
         struct ncclDevWorkP2p* p2p = (struct ncclDevWorkP2p*)ncclShmem.workStorage;
         batchOpCount = p2p->sendOpCount != 0 ? p2p->sendOpCount : p2p->recvOpCount;
         batchKernelIndex = p2p->sendCcldKernelIndex != UINT32_MAX ? p2p->sendCcldKernelIndex : p2p->recvCcldKernelIndex;
+        batchCcldCounter = p2p->sendCcldCounter != UINT64_MAX ? p2p->sendCcldCounter : p2p->recvCcldCounter;
         batchProtocol = (p2p->sendProtoLL || p2p->recvProtoLL) ? NCCL_PROTO_LL : NCCL_PROTO_SIMPLE;
       } else {
         struct ncclDevWorkColl* current = (struct ncclDevWorkColl*)ncclShmem.workStorage;
         batchOpCount = current->opCount;
         batchKernelIndex = current->ccldKernelIndex;
+        batchCcldCounter = current->ccldCounter;
         batchAlgorithm = current->algorithm;
         batchProtocol = current->protocol;
       }
@@ -638,10 +641,13 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
       if (ncclShmem.ccldDiagActive) {
         CCLD_DIAG_RESET();
         ccld->opCount = batchOpCount; ccld->funcIndex = ncclShmem.funcId;
+        ccld->ccldCounter = batchCcldCounter;
         ccld->algorithm = batchAlgorithm; ccld->protocol = batchProtocol;
         ccld->sendCount = 0; ccld->recvCount = 0; ccld->startTimestamp = wall_clock64();
         __atomic_store_n(&ccld->state, 1u, __ATOMIC_RELEASE);
-      } else {
+      } else if (ccld != nullptr) {
+        // The body is already active.  Preserve communication progress and
+        // report an observation loss without dereferencing a null slot.
         __atomic_fetch_add(&ccld->droppedBatches, 1ULL, __ATOMIC_RELAXED);
       }
     } else if (tid == 0) {

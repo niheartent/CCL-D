@@ -166,6 +166,22 @@ class RecordPool {
     return true;
   }
 
+  // Resolve a logical operation counter to its pinned body.  The lookup is
+  // intentionally linear: the pool is small and this path runs on the host
+  // diagnose thread, while keeping the device launch path lock-free.
+  bool find(uint64_t counter, uint32_t* kernelIndex, RecordView* out = nullptr) const {
+    if (!kernelIndex) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const Slot& slot : slots_) {
+      if (slot.view.state != RecordState::Free && slot.view.counter == counter) {
+        *kernelIndex = slot.view.kernelIndex;
+        if (out) *out = slot.view;
+        return true;
+      }
+    }
+    return false;
+  }
+
   size_t capacity() const { return slots_.size(); }
 
  private:
