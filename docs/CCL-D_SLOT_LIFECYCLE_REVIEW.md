@@ -30,6 +30,8 @@
 
 材料还强调 Ring 和 Tree 的比较口径不同：Ring 可以比较同一 collective 的所有 rank；Tree 只能比较同一层级的 rank。LL/LL128/Simple 的 send/recv 计数位置也不同，不能只在统一的 generic 末尾粗粒度累加。
 
+材料没有定义两个实现决策：LRU body 用尽时是丢弃、阻塞还是扩容；多 channel 操作由哪个 callback 作为整体结束。它们不能从“使用 LRU”和“每个 kernel 结束触发 callback”两句话直接推导，必须在实现规格中单独记录并通过实验验收。
+
 ## 当前实现与设计的差异
 
 | 项目 | 当前实现 | 设计要求 | 影响 |

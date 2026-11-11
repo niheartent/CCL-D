@@ -35,3 +35,27 @@
 3. 每轮使用独立 build 目录，并保留上一版安装目录用于回归对照。
 4. 仅在确认可接受内存余量后，把 `-parallel-jobs=12` 和 device-link `16` 做成一次对照实验；这属于构建参数实验，不改变诊断语义。
 5. 记录“首次编译”和“只改 host C++”两种耗时，不能把 host 增量结果外推到 device 头文件修改。
+
+## 开发构建配置
+
+现在可以显式控制 HIP 编译和 device-link 并行度，也可以限制自动生成的 device function 集合。完整验收仍使用默认全量函数；下面的配置只用于调试诊断核心和 host/work 元数据：
+
+```bash
+source /opt/dtk-26.04/env.sh
+cmake -S . -B ccld-artifacts/dev-gfx936/build \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DGPU_TARGETS=gfx936 \
+  -DBUILD_LOCAL_GPU_TARGET_ONLY=ON \
+  -DONLY_FUNCS='AllReduce RING LL/SIMPLE Sum f32|AllGather RING LL/SIMPLE Sum f32|ReduceScatter RING LL/SIMPLE Sum f32|Broadcast RING LL/SIMPLE Sum f32|AllToAllPivot RING SIMPLE Sum i8|SendRecv RING SIMPLE Sum i8' \
+  -DRCCL_HIP_PARALLEL_JOBS=24 \
+  -DRCCL_DEVICE_LINK_JOBS=16 \
+  -DCMAKE_INSTALL_PREFIX=$PWD/ccld-artifacts/dev-gfx936/install
+cmake --build ccld-artifacts/dev-gfx936/build --parallel 24
+```
+
+`ONLY_FUNCS` 会改变生成的 kernel 覆盖范围，开发构建不能用于最终能力声明或完整回归。修改 `src/device/common.h` 时仍会触发选定函数的 HIP 重编译；只修改 host C++ 时，现有 build 目录可以保留大部分对象。
+
+建议固定两套构建目录：
+
+- `dev-gfx936`：窄函数集、`RelWithDebInfo`，用于快速迭代；
+- `full-gfx936`：全函数集、Release，用于最终安装和验收。

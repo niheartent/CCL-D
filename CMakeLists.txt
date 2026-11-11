@@ -36,6 +36,9 @@ option(TRACE                                   "Enable additional tracing"      
 option(SUPPORT_XHCL_TOPO                       "Support Detect Hyswitch"                       ON)
 option(SUPPORT_PCIE_CHANNEL                    "Support PCIE CHANNEL"                          ON)
 option(SUPPORT_PLUGINS_SHCA                    "Support PLUGINS SHCA"                          OFF)
+set(RCCL_HIP_PARALLEL_JOBS "12" CACHE STRING "HIP compiler internal parallel jobs")
+set(RCCL_DEVICE_LINK_JOBS "" CACHE STRING "HIP device-link parallel jobs; empty uses memory-based default")
+set(ONLY_FUNCS "" CACHE STRING "Restrict generated device functions for development builds")
 # Default GPU architectures to build
 #==================================================================================================
 set(DEFAULT_GPUS
@@ -307,7 +310,7 @@ if (HAVE_KERNARG_PRELOAD)
   message(STATUS "Kernarg preloading to SGPR enabled")
 endif()
 
-check_cxx_compiler_flag("-parallel-jobs=12" HAVE_PARALLEL_JOBS)
+check_cxx_compiler_flag("-parallel-jobs=${RCCL_HIP_PARALLEL_JOBS}" HAVE_PARALLEL_JOBS)
 if (HAVE_PARALLEL_JOBS)
   message(STATUS "Parallel jobs enabled")
 endif()
@@ -802,7 +805,7 @@ endif()
 
 ## Set RCCL compile options
 if (HAVE_PARALLEL_JOBS)
-  target_compile_options(rccl PRIVATE -parallel-jobs=12)
+  target_compile_options(rccl PRIVATE -parallel-jobs=${RCCL_HIP_PARALLEL_JOBS})
 endif()
 target_compile_options(rccl PRIVATE -Wno-return-type)
 target_compile_options(rccl PRIVATE -Werror=uninitialized -Werror=sometimes-uninitialized)
@@ -890,9 +893,13 @@ else()
 endif()
 ## Reserve 16GB for each linker job. Limit max number of linker jobs to 16
 if (HAVE_PARALLEL_JOBS)
-  math(EXPR num_linker_jobs "(${memory_in_gb} + 15) / 16")
-  if (${num_linker_jobs} GREATER_EQUAL "16")
-    set(num_linker_jobs "16")
+  if (RCCL_DEVICE_LINK_JOBS STREQUAL "")
+    math(EXPR num_linker_jobs "(${memory_in_gb} + 15) / 16")
+    if (${num_linker_jobs} GREATER_EQUAL "16")
+      set(num_linker_jobs "16")
+    endif()
+  else()
+    set(num_linker_jobs "${RCCL_DEVICE_LINK_JOBS}")
   endif()
   message(STATUS "Use ${num_linker_jobs} jobs for linking")
   target_link_options(rccl PRIVATE -parallel-jobs=${num_linker_jobs})       # Use multiple threads to link
