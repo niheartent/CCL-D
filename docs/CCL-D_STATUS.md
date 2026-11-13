@@ -49,8 +49,8 @@
 
 - grouped Send/Recv 的 API 调用有各自 `counter`，RCCL `op_count` 标识共同的 grouped launch。分析器已改为按 `(comm_id, op_count)` 检查双方 peer、count、bytes、datatype，不再按独立 TraceID 拆开产生 `P2P_PEER_MISSING`。
 - device P2P completion 通过其 enqueue counter（及可用的 related counter）回连到同一 host `op_count`，输出 `P2P_DEVICE_EVIDENCE`，避免把可关联的完成证据统称为 uncorrelated。
-- 回放 `ccld-artifacts/lifecycle-5iter-20261113T035616Z`：5 个 P2P group 均为 `OK`，5 组 device evidence 均已关联；monitor 无 `P2P_PEER_MISSING` 或 `P2P_COMPLETION_UNCORRELATED`。monitor 汇总 58 条 `OK`、12 条 Ring topology asymmetry、5 条 P2P device evidence。
-- 分析器回归为 44 项通过。Ring asymmetry 与 P2P peer 缺失不同，是另一个仍需用 topology-aware 规则和真实拓扑检查的信号。
+- 回放 `ccld-artifacts/lifecycle-5iter-20261113T035616Z`：5 个 P2P group 均为 `OK`，5 组 device evidence 均已关联；monitor 无 `P2P_PEER_MISSING` 或 `P2P_COMPLETION_UNCORRELATED`。按当前拓扑职责边界重放汇总 65 条 `OK`、5 条 P2P device evidence、5 条因计数语义证据不足而等待的 `TOPOLOGY_PENDING`，没有 Ring/Tree 拓扑结构告警。
+- 分析器回归为 47 项通过。Ring 判定现在只检查 `prev/next` 闭合和 rank 集合完整性；耗时/速率波动由 `COMM_SLOW` 规则判断，不再标成 Ring 链路不对称。单个 channel 缺少完整 rank 集合时会明确保留为 `TOPOLOGY_PENDING`。
 
 ### 2026-11-13 VMFault 隔离结果
 

@@ -408,6 +408,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                 for row in ring_rows:
                     by_channel[int(row.get("channel", -1))].append(row)
                 asymmetric = []
+                pending = []
                 for channel, channel_rows in by_channel.items():
                     rank_rows = defaultdict(list)
                     for row in channel_rows:
@@ -420,27 +421,28 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                             bad = True
                         by_rank_row[rank] = next(iter(topology))
                     ring_ranks = set(by_rank_row)
+                    expected_ring_ranks = set(range(max((int(r.get("nranks", 0)) for r in channel_rows), default=0)))
+                    if expected_ring_ranks and ring_ranks != expected_ring_ranks:
+                        # A plan may expose only a subset of channels/ranks
+                        # while another plan for the same TraceID is still
+                        # being consumed. Do not call that partial evidence a
+                        # broken ring; report it as pending topology evidence.
+                        pending.append(channel)
+                        continue
                     if any(prev not in ring_ranks or nxt not in ring_ranks
                            for prev, nxt in by_rank_row.values()):
                         bad = True
                     if not bad:
                         bad = any(by_rank_row[nxt][0] != rank or by_rank_row[prev][1] != rank
                                   for rank, (prev, nxt) in by_rank_row.items())
-                    rates = []
-                    for rank, batch_rows in rank_rows.items():
-                        starts = [int(r["start_timestamp"]) for r in batch_rows if r.get("start_timestamp") is not None]
-                        ends = [int(r["end_timestamp"]) for r in batch_rows if r.get("end_timestamp") is not None]
-                        duration = max(ends) - min(starts) if starts and ends else 0
-                        sent = sum(int(r.get("send_count", 0)) for r in batch_rows)
-                        if duration > 0 and sent > 0:
-                            rates.append(sent / duration)
-                    if len(rates) >= 2 and min(rates) > 0 and max(rates) / min(rates) >= 2:
-                        bad = True
                     if bad:
                         asymmetric.append(channel)
-                topology_analysis = {"status": "RING_ASYMMETRY" if asymmetric else "RING_SYMMETRIC",
+                topology_status = ("RING_ASYMMETRY" if asymmetric else
+                                   "RING_TOPOLOGY_PENDING" if pending else "RING_SYMMETRIC")
+                topology_analysis = {"status": topology_status,
                                      "channels": sorted(by_channel),
-                                     "asymmetric_channels": sorted(asymmetric)}
+                                     "asymmetric_channels": sorted(asymmetric),
+                                     "pending_channels": sorted(pending)}
         elif tree_rows:
             required = ("tree_up", "tree_down0", "tree_down1", "tree_down2", "tree_depth")
             if any(any(r.get(field) is None for field in required) for r in tree_rows):

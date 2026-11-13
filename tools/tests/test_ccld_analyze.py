@@ -308,7 +308,16 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual(result["topology_analysis"]["status"], "RING_SYMMETRIC")
         json.dumps(result)
 
-    def test_ring_topology_detects_asymmetric_edge_rate(self):
+    def test_ring_topology_detects_broken_neighbor_reciprocity(self):
+        rows = [{"phase": "complete", "comm_id": "abcd", "counter": 111,
+                 "rank": rank, "nranks": 3, "algorithm": 1, "channel": 0,
+                 "ring_prev": prev, "ring_next": nxt, "send_count": 8,
+                 "recv_count": 8}
+                for rank, prev, nxt in ((0, 2, 1), (1, 0, 2), (2, 0, 0))]
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["topology_analysis"]["status"], "RING_ASYMMETRY")
+
+    def test_ring_count_rate_outlier_is_slow_not_topology_fault(self):
         rows = []
         for rank, peer, count in ((0, 1, 8), (1, 0, 2)):
             rows.append({"phase": "complete", "comm_id": "abcd", "counter": 12,
@@ -317,7 +326,30 @@ class CcldAnalyzeTest(unittest.TestCase):
                          "channel": 0, "ring_prev": peer, "ring_next": peer,
                          "start_timestamp": 0, "end_timestamp": 4})
         result = analyze_completions(rows)[0]
-        self.assertEqual(result["topology_analysis"]["status"], "RING_ASYMMETRY")
+        self.assertEqual(result["topology_analysis"]["status"], "RING_SYMMETRIC")
+        self.assertEqual(result["status"], "COMM_SLOW")
+
+    def test_ring_topology_does_not_treat_duration_jitter_as_bad_links(self):
+        rows = []
+        for rank in range(4):
+            rows.append({"phase": "complete", "comm_id": "abcd", "counter": 120,
+                         "rank": rank, "nranks": 4, "algorithm": 1,
+                         "channel": 0, "ring_prev": (rank - 1) % 4,
+                         "ring_next": (rank + 1) % 4, "send_count": 1000,
+                         "recv_count": 1000, "start_timestamp": 0,
+                         "end_timestamp": (100, 100, 100, 1000)[rank]})
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["topology_analysis"]["status"], "RING_SYMMETRIC")
+
+    def test_ring_partial_rank_set_is_pending(self):
+        rows = [{"phase": "complete", "comm_id": "abcd", "counter": 121,
+                 "rank": rank, "nranks": 4, "algorithm": 1, "channel": 2,
+                 "ring_prev": (rank - 1) % 4, "ring_next": (rank + 1) % 4,
+                 "send_count": 100, "recv_count": 100}
+                for rank in (0, 1, 2)]
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["topology_analysis"]["status"], "RING_TOPOLOGY_PENDING")
+        self.assertEqual(result["topology_analysis"]["pending_channels"], [2])
 
     def test_tree_topology_requires_explicit_levels(self):
         rows = [{"phase": "complete", "comm_id": "abcd", "counter": 13,
