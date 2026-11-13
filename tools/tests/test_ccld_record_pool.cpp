@@ -57,6 +57,20 @@ int main() {
   assert(pool.reserve(14, 0, &b) == ReserveResult::Reserved);
   assert(!pool.consumeBody(13, c));
 
+  // Paired P2P send/recv operations have separate counters but share one
+  // device completion; both records become reusable after that completion.
+  RecordPool p2pPool(2);
+  uint32_t sendIndex = UINT32_MAX, recvIndex = UINT32_MAX;
+  assert(p2pPool.reserve(20, 0, &sendIndex) == ReserveResult::Reserved);
+  assert(p2pPool.reserve(21, 0, &recvIndex) == ReserveResult::Reserved);
+  assert(p2pPool.markRunning(sendIndex));
+  assert(p2pPool.markRunning(recvIndex));
+  assert(p2pPool.registerBody(20, sendIndex));
+  assert(p2pPool.registerBody(21, recvIndex));
+  assert(p2pPool.consumeBody(20, sendIndex));
+  assert(p2pPool.consumeBody(21, recvIndex));
+  assert(p2pPool.reserve(22, 0, &sendIndex) == ReserveResult::Reserved);
+
   assert(!pool.markRunning(999));
   std::cout << "record pool lifecycle PASS\n";
   return 0;

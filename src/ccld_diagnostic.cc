@@ -148,13 +148,19 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
   g_log.flush();
 }
 
-void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter) {
+void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
+                          uint64_t relatedCounter) {
   if (!comm || !enabled() || counter == UINT64_MAX) return;
   std::lock_guard<std::mutex> guard(g_lock);
   auto it = g_pools.find(comm);
   if (it == g_pools.end()) return;
   uint32_t index = UINT32_MAX;
   if (it->second->find(counter, &index)) it->second->registerBody(counter, index);
+  if (relatedCounter != UINT64_MAX && relatedCounter != counter) {
+    uint32_t relatedIndex = UINT32_MAX;
+    if (it->second->find(relatedCounter, &relatedIndex))
+      it->second->registerBody(relatedCounter, relatedIndex);
+  }
 }
 
 void rcclCcldForgetComm(const struct ncclComm* comm) {
@@ -174,6 +180,11 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
       uint32_t index = UINT32_MAX;
       if (poolIt->second->find(diag->ccldCounter, &index))
         poolIt->second->consumeBody(diag->ccldCounter, index, 1 + diag->droppedBatches);
+      if (diag->relatedCcldCounter != UINT64_MAX) {
+        uint32_t relatedIndex = UINT32_MAX;
+        if (poolIt->second->find(diag->relatedCcldCounter, &relatedIndex))
+          poolIt->second->consumeBody(diag->relatedCcldCounter, relatedIndex, 1 + diag->droppedBatches);
+      }
     }
     return;
   }
@@ -199,6 +210,10 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
         << ",\"trace_id\":\"" << traceId.str()
         << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
         << "\",\"counter\":" << diag->ccldCounter
+        << ",\"related_counter\":";
+  if (diag->relatedCcldCounter == UINT64_MAX) g_log << "null";
+  else g_log << diag->relatedCcldCounter;
+  g_log
         << ",\"dropped_batches\":" << diag->droppedBatches
         << ",\"op_count\":" << diag->opCount
         << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
@@ -268,6 +283,11 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
     uint32_t index = UINT32_MAX;
     if (poolIt->second->find(diag->ccldCounter, &index))
       poolIt->second->consumeBody(diag->ccldCounter, index, 1 + diag->droppedBatches);
+    if (diag->relatedCcldCounter != UINT64_MAX) {
+      uint32_t relatedIndex = UINT32_MAX;
+      if (poolIt->second->find(diag->relatedCcldCounter, &relatedIndex))
+        poolIt->second->consumeBody(diag->relatedCcldCounter, relatedIndex, 1 + diag->droppedBatches);
+    }
   }
 }
 

@@ -618,6 +618,7 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
     if (tid == 0 && ncclShmem.comm.ccldDiag != nullptr) {
       uint64_t batchOpCount = 0;
       uint64_t batchCcldCounter = UINT64_MAX;
+      uint64_t batchRelatedCcldCounter = UINT64_MAX;
       uint32_t batchKernelIndex = UINT32_MAX;
       uint8_t batchAlgorithm = 0xff;
       uint8_t batchProtocol = 0xff;
@@ -626,6 +627,9 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
         batchOpCount = p2p->sendOpCount != 0 ? p2p->sendOpCount : p2p->recvOpCount;
         batchKernelIndex = p2p->sendCcldKernelIndex != UINT32_MAX ? p2p->sendCcldKernelIndex : p2p->recvCcldKernelIndex;
         batchCcldCounter = p2p->sendCcldCounter != UINT64_MAX ? p2p->sendCcldCounter : p2p->recvCcldCounter;
+        if (p2p->sendCcldCounter != UINT64_MAX && p2p->recvCcldCounter != UINT64_MAX &&
+            p2p->sendCcldCounter != p2p->recvCcldCounter)
+          batchRelatedCcldCounter = p2p->sendCcldCounter == batchCcldCounter ? p2p->recvCcldCounter : p2p->sendCcldCounter;
         batchProtocol = (p2p->sendProtoLL || p2p->recvProtoLL) ? NCCL_PROTO_LL : NCCL_PROTO_SIMPLE;
       } else {
         struct ncclDevWorkColl* current = (struct ncclDevWorkColl*)ncclShmem.workStorage;
@@ -642,6 +646,7 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
         CCLD_DIAG_RESET();
         ccld->opCount = batchOpCount; ccld->funcIndex = ncclShmem.funcId;
         ccld->ccldCounter = batchCcldCounter;
+        ccld->relatedCcldCounter = batchRelatedCcldCounter;
         ccld->algorithm = batchAlgorithm; ccld->protocol = batchProtocol;
         ccld->sendCount = 0; ccld->recvCount = 0; ccld->startTimestamp = wall_clock64();
         __atomic_store_n(&ccld->state, 1u, __ATOMIC_RELEASE);

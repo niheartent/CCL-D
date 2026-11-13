@@ -129,7 +129,8 @@ static void addWorkBatchToPlan(
     struct ncclComm* comm, struct ncclKernelPlan* plan, int channelId,
     enum ncclDevWorkType workType, int devFuncId, uint32_t workOffset,
     int p2pRound = -1, uint64_t ccldCounter = UINT64_MAX,
-    uint32_t ccldKernelIndex = UINT32_MAX
+    uint32_t ccldKernelIndex = UINT32_MAX,
+    uint64_t relatedCcldCounter = UINT64_MAX
   ) {
   ncclKernelPlanner::WipPlan::Channel* chan = &comm->planner.wipPlan.channels[channelId];
   size_t workSize = ncclDevWorkSize(workType);
@@ -185,7 +186,7 @@ static void addWorkBatchToPlan(
   }
   batch->offsetBitset |= 1ull<<(offset/workSize);
   if (rcclCcldEnabled() && ccldKernelIndex != UINT32_MAX)
-    rcclCcldRegisterBody(comm, ccldCounter);
+    rcclCcldRegisterBody(comm, ccldCounter, relatedCcldCounter);
   chan->wipBatch.workBytes += workSize;
   if (workType == ncclDevWorkTypeP2p) {
     // We need to ensure that a single batch doesn't have multiple p2p's
@@ -1064,7 +1065,8 @@ static ncclResult_t addP2pToPlan(
     int funcIdx = ncclDevFuncId_P2p();
     const uint64_t bodyCounter = sendP2p && sendP2p->ccldKernelIndex != UINT32_MAX ? sendP2p->ccldCounter : recvP2p ? recvP2p->ccldCounter : UINT64_MAX;
     const uint32_t bodyIndex = sendP2p && sendP2p->ccldKernelIndex != UINT32_MAX ? sendP2p->ccldKernelIndex : recvP2p ? recvP2p->ccldKernelIndex : UINT32_MAX;
-    addWorkBatchToPlan(comm, plan, channelId, ncclDevWorkTypeP2p, funcIdx, workOffset, p2pRound, bodyCounter, bodyIndex);
+    const uint64_t relatedCounter = sendP2p && recvP2p && sendP2p->ccldKernelIndex != UINT32_MAX && recvP2p->ccldKernelIndex != UINT32_MAX && sendP2p->ccldCounter != recvP2p->ccldCounter ? recvP2p->ccldCounter : UINT64_MAX;
+    addWorkBatchToPlan(comm, plan, channelId, ncclDevWorkTypeP2p, funcIdx, workOffset, p2pRound, bodyCounter, bodyIndex, relatedCounter);
     if (funcIdx < 0) {
       WARN("%s: unsupported collective. Please ensure the collective has been enabled in build.", __func__);
       return ncclInvalidUsage;

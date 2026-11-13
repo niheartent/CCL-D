@@ -16,14 +16,14 @@
 | 参数/缺失 rank 合成注入 | 已验证 | `MISMATCH`、`MISSING_RANK` |
 | slow/stall/missing completion 合成日志 | 已验证分析器路径 | 不等价于真实 GPU/网络故障 |
 | host 分配 `kernelIndex` 并传入 collective/P2P work | 原型已接入并通过窄函数集编译 | 目前尚未完成跨 plan 聚合、最终回收和完整运行验收 |
-| planner 登记诊断 body 并由诊断线程消费后回收 | 本轮已接入代码，待 RCCL 重编译和运行回归 | CCL-D 开启时按 TraceID 隔离 device work batch；planner 登记预期 body，诊断线程消费后按登记数释放 LRU 记录；同一 channel 多 plan、P2P 双向不同 TraceID 尚未完成证明 |
+| planner 登记诊断 body 并由诊断线程消费后回收 | collective 路径本轮已构建和双节点运行验证；P2P 双侧收口正在构建验证 | CCL-D 开启时按 TraceID 隔离 device work batch；planner 登记预期 body，诊断线程消费后按登记数释放 LRU 记录。P2P send/recv 双 counter 已加入相关 counter 字段及同一完成事件收口，待构建和双节点回归 |
 
 ## 设计材料明确要求但当前没有完成的部分
 
 | 设计要求 | 当前状态 | 不能默认完成的原因 |
 |---|---|---|
 | `commId + counter + 扩展位` 作为操作级 TraceID | 部分实现 | host 已分配独立 `ccldCounter`，并贯穿 collective/P2P work 与 device diag；跨 plan 聚合和最终回收仍在接入 |
-| `kernelIndex` LRU 物理索引 | 部分实现 | host RecordPool 已实现不覆盖活动 body的状态机并分配物理索引；本轮接入 planner body 登记和诊断消费回收，尚待全量构建及多 plan/P2P 实测 |
+| `kernelIndex` LRU 物理索引 | 部分实现 | host RecordPool 已实现不覆盖活动 body的状态机并分配物理索引；planner 登记、诊断消费回收和 collective 运行验证已完成本轮，P2P 配对 counter 的补丁待构建及实测 |
 | pinned memory body 按操作/channel 保存计数 | 部分实现 | pinned 区域和 channel 计数已存在，device 不再使用 `opCount % slot`；body 生命周期仍需由 plan/work 完成事件收口 |
 | diagnostic thread 周期采样 | 部分实现 | 有轮询 sample，当前默认 10 ms；材料正文给出默认约 200 微秒，示例又使用 1 ms 精度，必须通过实测确定本实现的有效口径 |
 | kernel host callback 通知结束 | 未完成 | 当前以诊断线程观察 device body 完成状态作为回收信号；尚未实现材料级 kernel host callback 与 plan/work/channel 整体结束通知 |
@@ -63,7 +63,7 @@
 
 此前诊断线程消费 `state=2` body 后没有任何路径通知 host pool 回收，导致已完成操作永久占用 16 个 LRU slot。本轮在 planner 写入 channel work 时登记预期 body，且 CCL-D 开启时避免不同 work 合并到一个 device batch；诊断线程输出 complete 记录后按该 TraceID 消费 body，全部已登记 body 消费后释放 slot。状态机单测已通过，但 RCCL 重编译和运行回归尚未完成，因此不能声称 RESOURCE_EXHAUSTED 已在运行时消失。
 
-当前实现还不能证明同一 TraceID 在同一 channel 的多 plan/work 计数被聚合为一个最终 body；P2P work 同时带 send/recv 两侧身份，而 device diag 当前只选一侧身份，双向 TraceID 的归属与回收仍需调整。AllToAll 父操作关联、Simple/LL/LL128 计数语义、真实 slow/hang 决策仍是独立未完成项。
+当前实现尚未证明同一 TraceID 在同一 channel 跨多个 plan 的设备 body 具有完整计数语义；monitor 会按 TraceID 汇总多条 completion，但 body 忙时产生的 `dropped_batches` 仍代表计数缺口。P2P 双侧 counter 已加配对字段，待本轮新库实测。AllToAll 父操作关联、Simple/LL/LL128 计数语义、真实 slow/hang 决策仍是独立未完成项。
 
 源码审计还确认：`rcclCcldRecordEnqueue()` 目前在 `ncclEnqueueCheck()` 的 `taskAppend()` 之前执行，而 `comm->opCount` 的推进发生在 proxy 提交路径。因而不能直接把当前 enqueue 日志中的 `comm->opCount` 当作已经稳定分配的材料级操作 counter；分组调用和 plan 内多个 task 的归属必须先在 host planner 侧明确。
 
