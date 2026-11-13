@@ -15,15 +15,15 @@
 | Python analyzer/monitor 单测 | 已完成 | 最近一次 39 项通过 |
 | 参数/缺失 rank 合成注入 | 已验证 | `MISMATCH`、`MISSING_RANK` |
 | slow/stall/missing completion 合成日志 | 已验证分析器路径 | 不等价于真实 GPU/网络故障 |
-| host 分配 `kernelIndex` 并传入 collective/P2P work | 原型已接入并通过窄函数集编译 | 目前尚未完成跨 plan 聚合、最终回收和完整运行验收 |
-| planner 登记诊断 body 并由诊断线程消费后回收 | collective 路径本轮已构建和双节点运行验证；P2P 双侧收口正在构建验证 | CCL-D 开启时按 TraceID 隔离 device work batch；planner 登记预期 body，诊断线程消费后按登记数释放 LRU 记录。P2P send/recv 双 counter 已加入相关 counter 字段及同一完成事件收口，待构建和双节点回归 |
+| host 分配 `kernelIndex` 并传入 collective/P2P work | 已接入并完成独立 gfx936 构建 | 跨 plan 的完整 operation callback 仍待补齐 |
+| planner 登记诊断 body 并由诊断线程消费后回收 | collective、P2P、AllToAll 单轮双节点已验证 | planner 登记预期 body，诊断线程消费后按登记数释放；P2P 双 counter 和 AllToAll 父 TraceID 已接入；长稳、多 plan callback 仍待验证 |
 
 ## 设计材料明确要求但当前没有完成的部分
 
 | 设计要求 | 当前状态 | 不能默认完成的原因 |
 |---|---|---|
 | `commId + counter + 扩展位` 作为操作级 TraceID | 部分实现 | host 已分配独立 `ccldCounter`，并贯穿 collective/P2P work 与 device diag；跨 plan 聚合和最终回收仍在接入 |
-| `kernelIndex` LRU 物理索引 | 部分实现 | host RecordPool 已实现不覆盖活动 body的状态机并分配物理索引；planner 登记、诊断消费回收和 collective 运行验证已完成本轮，P2P 配对 counter 的补丁待构建及实测 |
+| `kernelIndex` LRU 物理索引 | 部分实现 | RecordPool、planner 登记、诊断消费回收已接入；单轮双节点无 `RESOURCE_EXHAUSTED`，异步长稳容量策略仍需验收 |
 | pinned memory body 按操作/channel 保存计数 | 部分实现 | pinned 区域和 channel 计数已存在，device 不再使用 `opCount % slot`；body 生命周期仍需由 plan/work 完成事件收口 |
 | diagnostic thread 周期采样 | 部分实现 | 有轮询 sample，当前默认 10 ms；材料正文给出默认约 200 微秒，示例又使用 1 ms 精度，必须通过实测确定本实现的有效口径 |
 | kernel host callback 通知结束 | 未完成 | 当前以诊断线程观察 device body 完成状态作为回收信号；尚未实现材料级 kernel host callback 与 plan/work/channel 整体结束通知 |
@@ -58,12 +58,12 @@
 - 全量 device LTO/link 用时约 1809 秒（约 30 分钟）；窄函数构建仍用于快速编译检查。
 - 8 rank、HPDPS-6/HPDPS-7、AllGather/ReduceScatter/Broadcast/AllToAll/P2P 数据面测试通过。
 - host record pool 单测通过，Python analyzer 39 项通过。
-- 新鲜双节点诊断日志仍出现 `RESOURCE_EXHAUSTED`：2 轮测试记录 208 条资源耗尽、1892 条 complete。该结果符合“观测资源耗尽时通信继续”的安全策略，但说明 operation-level body 回收尚未接入，不能作为诊断完整验收通过。
-- 后续必须接入 plan/work/channel 的完成聚合和最终回收，再重复同一回归确认资源耗尽归零或仅在明确超载场景出现。
+- 历史双节点日志中曾出现 `RESOURCE_EXHAUSTED`，当时 device body 没有最终回收路径且 AllToAll 子操作独立占用 slot。
+- 本轮修复后，最新独立 gfx936 库双节点单轮回归中 48 个 enqueue 全部为 `RECORDED`，无 `RESOURCE_EXHAUSTED`、无 `dropped_batches`；五算子数据正确性通过。
 
-此前诊断线程消费 `state=2` body 后没有任何路径通知 host pool 回收，导致已完成操作永久占用 16 个 LRU slot。本轮在 planner 写入 channel work 时登记预期 body，且 CCL-D 开启时避免不同 work 合并到一个 device batch；诊断线程输出 complete 记录后按该 TraceID 消费 body，全部已登记 body 消费后释放 slot。状态机单测已通过，但 RCCL 重编译和运行回归尚未完成，因此不能声称 RESOURCE_EXHAUSTED 已在运行时消失。
+此前诊断线程消费 `state=2` body 后没有任何路径通知 host pool 回收，导致已完成操作永久占用 16 个 LRU slot。本轮在 planner 写入 channel work 时登记预期 body，且 CCL-D 开启时避免不同 work 合并到一个 device batch；诊断线程输出 complete 记录后按该 TraceID 消费 body，全部已登记 body 消费后释放 slot。单轮双节点验证已证实 slot 可回收。
 
-当前实现尚未证明同一 TraceID 在同一 channel 跨多个 plan 的设备 body 具有完整计数语义；monitor 会按 TraceID 汇总多条 completion，但 body 忙时产生的 `dropped_batches` 仍代表计数缺口。P2P 双侧 counter 已加配对字段，待本轮新库实测。AllToAll 父操作关联、Simple/LL/LL128 计数语义、真实 slow/hang 决策仍是独立未完成项。
+当前实现尚未证明同一 TraceID 在同一 channel 跨多个 plan 的设备 body 具有完整计数语义；monitor 会按 TraceID 汇总多条 completion。P2P 双侧 counter 和 AllToAll 父操作关联已完成单轮验证。Simple/LL/LL128 计数语义、真实 slow/hang 决策以及长稳容量策略仍是独立未完成项。
 
 源码审计还确认：`rcclCcldRecordEnqueue()` 目前在 `ncclEnqueueCheck()` 的 `taskAppend()` 之前执行，而 `comm->opCount` 的推进发生在 proxy 提交路径。因而不能直接把当前 enqueue 日志中的 `comm->opCount` 当作已经稳定分配的材料级操作 counter；分组调用和 plan 内多个 task 的归属必须先在 host planner 侧明确。
 
