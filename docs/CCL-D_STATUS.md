@@ -1,95 +1,42 @@
 # CCL-D 状态总览
 
-本文只记录已验证事实、材料明确要求和当前未验证缺口。没有实测或没有在设计材料中明确的内容，不标记为完成。
+本文按“代码存在”和“运行语义已验收”区分状态。
 
-## 已验证事实
+## 已验收
 
-| 项目 | 状态 | 证据 |
+| 项目 | 证据 |
+|---|---|
+| gfx936 独立 RCCL 构建与安装 | `ccld-artifacts/full-gfx936/` |
+| 双节点 8 rank 启动与共享存储 | HPDPS-6/7，SSH 2234，共享 `/workspace` |
+| AllGather、ReduceScatter、Broadcast、AllToAll、P2P 数据正确性 | 多算子 slot 回归通过 |
+| 参数、缺失 rank、P2P 配对和合成 slow/stall 分析 | analyzer/monitor 单测与故障矩阵通过 |
+| grouped P2P 与 AllToAll 父操作关联 | 双节点回放验证，无 P2P 未关联告警 |
+| Ring 结构检查 | 邻居闭合、partial channel pending 和误报回归已覆盖 |
+| Python analyzer/monitor | 47 项单测通过 |
+
+## 已接入但尚未完成运行时验收
+
+| 项目 | 当前状态 | 验收缺口 |
 |---|---|---|
-| gfx936 独立 RCCL 构建目录 | 已完成 | `ccld-artifacts/sample-probe-build` |
-| gfx936 独立 RCCL 安装前缀 | 已完成上一版安装 | `ccld-artifacts/sample-probe-install`；最近增量构建曾完成但未在 slot 生命周期修正后重新安装 |
-| 双节点 SSH/共享存储 | 已完成 | HPDPS-6/7、SSH 2234、共享 `/workspace` |
-| UCX/MPI 双节点启动 | 已验证基础路径 | Open MPI 5.0.3，双节点 8 rank 启动成功 |
-| 五类数据面回归 | 已验证 | AllGather、ReduceScatter、Broadcast、AllToAll、P2P 数据结果通过 |
-| 8 rank、20 轮、count 4096 | 数据面通过 | `slot_regression PASS` |
-| Python analyzer/monitor 单测 | 已完成 | 最近一次 47 项通过；含 grouped P2P 配对、device completion 关联和 Ring 拓扑判定测试 |
-| 参数/缺失 rank 合成注入 | 已验证 | `MISMATCH`、`MISSING_RANK` |
-| slow/stall/missing completion 合成日志 | 已验证分析器路径 | 不等价于真实 GPU/网络故障 |
-| host 分配 `kernelIndex` 并传入 collective/P2P work | 已接入并完成独立 gfx936 构建 | 跨 plan 的完整 operation callback 仍待补齐 |
-| planner 登记诊断 body 并由诊断线程消费后回收 | collective、P2P、AllToAll 单轮双节点已验证 | planner 登记预期 body，诊断线程消费后按登记数释放；P2P 双 counter 和 AllToAll 父 TraceID 已接入；长稳、多 plan callback 仍待验证 |
+| 操作级 TraceID 与 `kernelIndex` | host 已分配并传入 collective/P2P work | 跨多个 plan/work/channel 的唯一归属尚未证明 |
+| pinned body 与 slot 回收 | planner 登记 body，诊断线程消费后释放 | callback 缺失、销毁清理和长轮次容量尚未验收 |
+| AllToAll 父操作 | 已接入单轮路径 | 多 plan、长轮次仍需验证 |
+| Ring/Tree 分析 | Ring 基础规则已验收，Tree 有规则 | 真实 Tree 多节点长期回归未完成 |
 
-## 设计材料明确要求但当前没有完成的部分
+## 尚未完成的核心实现
 
-| 设计要求 | 当前状态 | 不能默认完成的原因 |
-|---|---|---|
-| `commId + counter + 扩展位` 作为操作级 TraceID | 部分实现 | host 已分配独立 `ccldCounter`，并贯穿 collective/P2P work 与 device diag；跨 plan 聚合和最终回收仍在接入 |
-| `kernelIndex` LRU 物理索引 | 部分实现 | RecordPool、planner 登记、诊断消费回收已接入；单轮双节点无 `RESOURCE_EXHAUSTED`，异步长稳容量策略仍需验收 |
-| pinned memory body 按操作/channel 保存计数 | 部分实现 | pinned 区域和 channel 计数已存在，device 不再使用 `opCount % slot`；body 生命周期仍需由 plan/work 完成事件收口 |
-| diagnostic thread 周期采样 | 部分实现 | 有轮询 sample，当前默认 10 ms；材料正文给出默认约 200 微秒，示例又使用 1 ms 精度，必须通过实测确定本实现的有效口径 |
-| kernel host callback 通知结束 | 未完成 | 当前以诊断线程观察 device body 完成状态作为回收信号；尚未实现材料级 kernel host callback 与 plan/work/channel 整体结束通知 |
-| 多 work/batch 归属同一操作 TraceID | 未完成 | 当前 kernel 侧不能证明 batch 内所有 work 都正确归入同一操作记录 |
-| AllToAll 保留父操作身份 | 已接入并完成单轮验证 | 外层 AllToAll TraceID 已传给展开的 P2P work；monitor 回放显示 AllToAll 作为独立操作为 `OK`。长稳和跨 plan 仍待验证 |
-| Simple/LL/LL128 精确计数点 | 未完成 | 材料要求不同 primitive 位置，当前统一计数宏尚未逐路径对照验证 |
-| Ring 全局比较 | 部分实现 | 规则已写入 analyzer，但真实数据完整性和长期回归未完成 |
-| Tree 同层比较 | 部分实现 | 规则已写入 analyzer，但真实多节点 Tree 回归未完成 |
-| 决策树根因归类 | 部分实现 | 目前是规则集合，不是材料中的完整 slow/hang 决策树 |
-| 真实训练 slow/hang | 未完成 | 当前主要是诊断记录注入和合成日志 |
-| 性能、CPU、pinned memory、GPU 开销 | 未完成 | 没有按材料口径完成对照实验 |
+1. **完成通知**：将 RCCL plan/work 的真实完成边界连接到诊断记录，区分 channel 完成和整个 TraceID 完成。
+2. **跨 plan 聚合**：同一用户操作的所有 body 必须在最终收口后再回收，不能由单个 kernel 完成事件提前释放。
+3. **协议计数**：按材料逐条核对 Simple、LL、LL128 的计数位置和 mode 语义，并用实际传输规模验证。
+4. **真实 slow/hang 验收**：当前故障注入主要改变诊断证据，不等价于 GPU kernel、驱动或网络故障。
+5. **长期资源验收**：100/1000 轮、多 communicator/stream 下确认无资源泄漏、观测丢失和错误回收。
 
-## 已确定的实现决策
+## 已确定的实现语义
 
-- LRU body 用尽时不阻塞通信、不覆盖活动记录、不自动扩容；输出 `RESOURCE_EXHAUSTED` 或 `OBSERVATION_DROPPED`。
-- 多 channel 操作以同一 TraceID 的全部 plan/work/channel 完成为整体结束；一个 RCCL plan callback 不能单独结束跨 plan 操作。
-- 运行中按 channel 输出 sample，最终按 TraceID 收口；body 消费后立即回收，资源耗尽仅形成显式观测缺口。
-- 这两项是本工程的实现决策，不是材料中明确给出的原文规则。详细理由见 [`CCL-D_IMPLEMENTATION_DECISIONS.md`](CCL-D_IMPLEMENTATION_DECISIONS.md)。host 侧独立状态机原型已通过单测，尚未接入 RCCL planner/work。
+- LRU body 用尽：记录显式丢失，通信继续；输出 `RESOURCE_EXHAUSTED` 或 `OBSERVATION_DROPPED`。
+- 多 channel/work/plan：以同一 TraceID 的全部预期 body 完成为整体结束；单个 kernel 不得提前回收。
+- `MISSING_COMPLETION` 只用于已经成功分配记录但未收到预期完成通知的情况。
 
-## 当前明确问题
+## 当前证据边界
 
-### P2P monitor 关联修正（2026-11-13）
-
-- grouped Send/Recv 的 API 调用有各自 `counter`，RCCL `op_count` 标识共同的 grouped launch。分析器已改为按 `(comm_id, op_count)` 检查双方 peer、count、bytes、datatype，不再按独立 TraceID 拆开产生 `P2P_PEER_MISSING`。
-- device P2P completion 通过其 enqueue counter（及可用的 related counter）回连到同一 host `op_count`，输出 `P2P_DEVICE_EVIDENCE`，避免把可关联的完成证据统称为 uncorrelated。
-- 回放 `ccld-artifacts/lifecycle-5iter-20261113T035616Z`：5 个 P2P group 均为 `OK`，5 组 device evidence 均已关联；monitor 无 `P2P_PEER_MISSING` 或 `P2P_COMPLETION_UNCORRELATED`。按当前拓扑职责边界重放汇总 65 条 `OK`、5 条 P2P device evidence、5 条因计数语义证据不足而等待的 `TOPOLOGY_PENDING`，没有 Ring/Tree 拓扑结构告警。
-- 分析器回归为 47 项通过。Ring 判定现在只检查 `prev/next` 闭合和 rank 集合完整性；耗时/速率波动由 `COMM_SLOW` 规则判断，不再标成 Ring 链路不对称。单个 channel 缺少完整 rank 集合时会明确保留为 `TOPOLOGY_PENDING`。
-
-### 2026-11-13 VMFault 隔离结果
-
-- 完整函数集安装版 `full-gfx936/install` 在本机 2/3/4 rank 和 HPDPS-6/7 双节点 2/4/8 rank、2 轮五算子回归均通过。
-- 因此前一次 VMFault 不是双节点 RCCL 数据面必现问题；触发环境与开发窄函数安装版混用有关，后续验收不得使用窄函数安装前缀做完整能力测试。
-- 历史安装版开启 CCL-D 后通信仍通过，但 `RESOURCE_EXHAUSTED` 随迭代增长；该现象来自当时未接入 body 回收和 AllToAll 子操作拆分。
-
-## 2026-11-11 完整 gfx936 构建与双节点回归
-
-- 完整 Release 构建成功：`ccld-artifacts/full-gfx936/build`。
-- 独立安装成功：`ccld-artifacts/full-gfx936/install/lib/librccl.so.1.0`。
-- 全量 device LTO/link 用时约 1809 秒（约 30 分钟）；窄函数构建仍用于快速编译检查。
-- 8 rank、HPDPS-6/HPDPS-7、AllGather/ReduceScatter/Broadcast/AllToAll/P2P 数据面测试通过。
-- host record pool 单测通过，Python analyzer 39 项通过。
-- 历史双节点日志中曾出现 `RESOURCE_EXHAUSTED`，当时 device body 没有最终回收路径且 AllToAll 子操作独立占用 slot。
-- 本轮修复后，最新独立 gfx936 库双节点单轮回归中 48 个 enqueue 全部为 `RECORDED`，无 `RESOURCE_EXHAUSTED`、无 `dropped_batches`；五算子数据正确性通过。
-
-此前诊断线程消费 `state=2` body 后没有任何路径通知 host pool 回收，导致已完成操作永久占用 16 个 LRU slot。本轮在 planner 写入 channel work 时登记预期 body，且 CCL-D 开启时避免不同 work 合并到一个 device batch；诊断线程输出 complete 记录后按该 TraceID 消费 body，全部已登记 body 消费后释放 slot。单轮双节点验证已证实 slot 可回收。
-
-当前实现尚未证明同一 TraceID 在同一 channel 跨多个 plan 的设备 body 具有完整计数语义；monitor 会按 TraceID 汇总多条 completion。P2P 双侧 counter 和 AllToAll 父操作关联已完成单轮验证。Simple/LL/LL128 计数语义、真实 slow/hang 决策以及长稳容量策略仍是独立未完成项。
-
-源码审计还确认：`rcclCcldRecordEnqueue()` 目前在 `ncclEnqueueCheck()` 的 `taskAppend()` 之前执行，而 `comm->opCount` 的推进发生在 proxy 提交路径。因而不能直接把当前 enqueue 日志中的 `comm->opCount` 当作已经稳定分配的材料级操作 counter；分组调用和 plan 内多个 task 的归属必须先在 host planner 侧明确。
-
-因此，当前不能把 `dropped_batches=0` 或一次回归 PASS 当作完整诊断实现的证明；本轮 5 轮验证已确认 P2P/AllToAll 分析关联和 slot 回收没有立即退化，仍需长稳及跨 plan 验收。
-
-## 当前完成度口径
-
-不再用单一百分比表示完成度。按材料验收分层：
-
-- **数据面回归层**：五类算子已通过一次 8 rank、20 轮正确性测试。
-- **诊断记录层**：host 已开始分配并传入 `kernelIndex`，device 已停止用 `opCount % slot` 选择索引；跨 plan 聚合、最终回收和完整运行验收仍未完成。
-- **分析器层**：已有基础参数、缺失、速率、P2P 边和 Ring/Tree 规则，但不是完整决策树。
-- **论文级验收层**：未完成，尤其缺 LRU/callback、多 work 归属、协议精确计数、训练任务和性能数据。
-
-## 下一步必须先完成的验证
-
-1. 按 `ncclEnqueueCheck → taskAppend → plan → uploadProxyOps → kernel → callback` 画出实际生命周期，并确定操作 counter 的唯一分配点。
-2. 在不编译的情况下，用合成记录验证 `TraceID`、`kernelIndex`、body/channel、回收状态机。
-3. 明确 AllToAll/P2P parent operation 和多 work batch 归属字段，同时确认 FIFO/graph/persistent work 结构预算。
-4. 明确 Simple/LL/LL128 的真实计数插入点和 mode 语义。
-5. 通过状态机单测后，统一修改 host work 元数据、device body 和结束通知，再编译 RCCL。
-6. 新库安装后重新跑干净目录的五算子回归，再测 100/1000 轮、多 communicator/stream 和长稳。
+最近双节点 5 轮回放为 65 条 `OK`、5 条 `P2P_DEVICE_EVIDENCE`、5 条 `TOPOLOGY_PENDING`，无 Ring/Tree 结构告警。该结果证明当前样本没有立即退化，不证明材料级生命周期和协议计数已经完成。
