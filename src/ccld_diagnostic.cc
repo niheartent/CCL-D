@@ -16,6 +16,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 std::mutex g_lock;
@@ -23,6 +24,13 @@ std::ofstream g_log;
 std::string g_path;
 std::atomic<bool> g_initialized{false};
 std::unordered_map<const ncclComm*, std::unique_ptr<rccl_ccld::RecordPool>> g_pools;
+struct ParentRecord {
+  const ncclComm* comm = nullptr;
+  uint64_t counter = UINT64_MAX;
+  uint32_t kernelIndex = UINT32_MAX;
+  uint32_t refs = 0;
+};
+thread_local std::vector<ParentRecord> g_parentRecordStack;
 
 bool enabled() {
   const char* value = std::getenv("RCCL_CCLD_ENABLE");
@@ -96,6 +104,13 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
   if (!info || !info->comm || !enabled()) return;
   info->ccldCounter = UINT64_MAX;
   if (info->comm->nRanks <= 1 || info->count == 0) return;
+  if (!g_parentRecordStack.empty() && g_parentRecordStack.back().comm == info->comm &&
+      g_parentRecordStack.back().counter != UINT64_MAX) {
+    info->ccldCounter = g_parentRecordStack.back().counter;
+    info->ccldKernelIndex = g_parentRecordStack.back().kernelIndex;
+    ++g_parentRecordStack.back().refs;
+    return;
+  }
   std::lock_guard<std::mutex> guard(g_lock);
   init(info->comm);
   if (!g_log) return;
@@ -148,6 +163,17 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
   g_log.flush();
 }
 
+void rcclCcldBeginParent(struct ncclInfo* info) {
+  if (!info || !info->comm || !enabled() || !g_parentRecordStack.empty()) return;
+  rcclCcldRecordEnqueue(info);
+  if (info->ccldCounter == UINT64_MAX || info->ccldKernelIndex == UINT32_MAX) return;
+  g_parentRecordStack.push_back(ParentRecord{info->comm, info->ccldCounter, info->ccldKernelIndex, 0});
+}
+
+void rcclCcldEndParent() {
+  if (!g_parentRecordStack.empty()) g_parentRecordStack.pop_back();
+}
+
 void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
                           uint64_t relatedCounter) {
   if (!comm || !enabled() || counter == UINT64_MAX) return;
@@ -155,7 +181,9 @@ void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
   auto it = g_pools.find(comm);
   if (it == g_pools.end()) return;
   uint32_t index = UINT32_MAX;
-  if (it->second->find(counter, &index)) it->second->registerBody(counter, index);
+  if (it->second->find(counter, &index)) {
+    it->second->registerBody(counter, index);
+  }
   if (relatedCounter != UINT64_MAX && relatedCounter != counter) {
     uint32_t relatedIndex = UINT32_MAX;
     if (it->second->find(relatedCounter, &relatedIndex))

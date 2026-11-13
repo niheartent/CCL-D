@@ -17,6 +17,16 @@ struct ncclCollTrace;
 void rcclCcldRecordEnqueue(struct ncclInfo* info);
 void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
                           uint64_t relatedCounter = UINT64_MAX);
+void rcclCcldBeginParent(struct ncclInfo* info);
+void rcclCcldEndParent();
+
+class ncclCcldParentScope {
+ public:
+  explicit ncclCcldParentScope(struct ncclInfo* info) { rcclCcldBeginParent(info); }
+  ~ncclCcldParentScope() { rcclCcldEndParent(); }
+  ncclCcldParentScope(const ncclCcldParentScope&) = delete;
+  ncclCcldParentScope& operator=(const ncclCcldParentScope&) = delete;
+};
 bool rcclCcldEnabled();
 
 // Release per-communicator diagnostic state after RCCL has accepted destroy.
