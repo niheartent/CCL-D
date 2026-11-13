@@ -140,4 +140,4 @@ tools/tests/run_ccld_runtime_smoke.sh \
   /workspace/CCL-D/rccl-artifacts/dtk-26.04-gfx936/build/test/rccl-UnitTests
 ```
 
-当前 Python 单元测试以实际运行结果为准（最近一次 39 项通过）。构建、安装和实验结果统一保存在 `ccld-artifacts/`；源码目录中的修改不会覆盖已有独立安装产物。
+当前 Python 单元测试以实际运行结果为准（最近一次 47 项通过）。构建、安装和实验结果统一保存在 `ccld-artifacts/`；源码目录中的修改不会覆盖已有独立安装产物。

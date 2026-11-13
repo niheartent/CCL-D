@@ -12,7 +12,7 @@
 | UCX/MPI 双节点启动 | 已验证基础路径 | Open MPI 5.0.3，双节点 8 rank 启动成功 |
 | 五类数据面回归 | 已验证 | AllGather、ReduceScatter、Broadcast、AllToAll、P2P 数据结果通过 |
 | 8 rank、20 轮、count 4096 | 数据面通过 | `slot_regression PASS` |
-| Python analyzer/monitor 单测 | 已完成 | 最近一次 44 项通过；新增真实 grouped P2P 配对和 device completion 关联测试 |
+| Python analyzer/monitor 单测 | 已完成 | 最近一次 47 项通过；含 grouped P2P 配对、device completion 关联和 Ring 拓扑判定测试 |
 | 参数/缺失 rank 合成注入 | 已验证 | `MISMATCH`、`MISSING_RANK` |
 | slow/stall/missing completion 合成日志 | 已验证分析器路径 | 不等价于真实 GPU/网络故障 |
 | host 分配 `kernelIndex` 并传入 collective/P2P work | 已接入并完成独立 gfx936 构建 | 跨 plan 的完整 operation callback 仍待补齐 |
