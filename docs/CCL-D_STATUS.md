@@ -16,16 +16,17 @@
 | 参数/缺失 rank 合成注入 | 已验证 | `MISMATCH`、`MISSING_RANK` |
 | slow/stall/missing completion 合成日志 | 已验证分析器路径 | 不等价于真实 GPU/网络故障 |
 | host 分配 `kernelIndex` 并传入 collective/P2P work | 原型已接入并通过窄函数集编译 | 目前尚未完成跨 plan 聚合、最终回收和完整运行验收 |
+| planner 登记诊断 body 并由诊断线程消费后回收 | 本轮已接入代码，待 RCCL 重编译和运行回归 | CCL-D 开启时按 TraceID 隔离 device work batch；planner 登记预期 body，诊断线程消费后按登记数释放 LRU 记录；同一 channel 多 plan、P2P 双向不同 TraceID 尚未完成证明 |
 
 ## 设计材料明确要求但当前没有完成的部分
 
 | 设计要求 | 当前状态 | 不能默认完成的原因 |
 |---|---|---|
 | `commId + counter + 扩展位` 作为操作级 TraceID | 部分实现 | host 已分配独立 `ccldCounter`，并贯穿 collective/P2P work 与 device diag；跨 plan 聚合和最终回收仍在接入 |
-| `kernelIndex` LRU 物理索引 | 部分实现 | host RecordPool 已实现不覆盖活动 body 的状态机并分配物理索引；尚未完成 planner 级多 plan 注册和最终回收接线 |
+| `kernelIndex` LRU 物理索引 | 部分实现 | host RecordPool 已实现不覆盖活动 body的状态机并分配物理索引；本轮接入 planner body 登记和诊断消费回收，尚待全量构建及多 plan/P2P 实测 |
 | pinned memory body 按操作/channel 保存计数 | 部分实现 | pinned 区域和 channel 计数已存在，device 不再使用 `opCount % slot`；body 生命周期仍需由 plan/work 完成事件收口 |
 | diagnostic thread 周期采样 | 部分实现 | 有轮询 sample，当前默认 10 ms；材料正文给出默认约 200 微秒，示例又使用 1 ms 精度，必须通过实测确定本实现的有效口径 |
-| kernel host callback 通知结束 | 部分实现 | 诊断线程已能消费 complete body；planner/reclaimer 的 operation-level callback 聚合尚未完成 |
+| kernel host callback 通知结束 | 未完成 | 当前以诊断线程观察 device body 完成状态作为回收信号；尚未实现材料级 kernel host callback 与 plan/work/channel 整体结束通知 |
 | 多 work/batch 归属同一操作 TraceID | 未完成 | 当前 kernel 侧不能证明 batch 内所有 work 都正确归入同一操作记录 |
 | AllToAll 保留父操作身份 | 未完成 | RCCL 当前路径展开为 P2P Send/Recv，尚未记录 parent operation |
 | Simple/LL/LL128 精确计数点 | 未完成 | 材料要求不同 primitive 位置，当前统一计数宏尚未逐路径对照验证 |
@@ -60,7 +61,9 @@
 - 新鲜双节点诊断日志仍出现 `RESOURCE_EXHAUSTED`：2 轮测试记录 208 条资源耗尽、1892 条 complete。该结果符合“观测资源耗尽时通信继续”的安全策略，但说明 operation-level body 回收尚未接入，不能作为诊断完整验收通过。
 - 后续必须接入 plan/work/channel 的完成聚合和最终回收，再重复同一回归确认资源耗尽归零或仅在明确超载场景出现。
 
-上一轮五算子数据面回归中观察到诊断记录丢失。随后加入了 `dropped_batches` 记录，但这只能把观测丢失显式化，不能证明生命周期正确。问题根因尚未完成材料级修复：当前实现仍把物理 slot 和操作身份混用，且没有完成 `kernelIndex` LRU、callback 回收和多 work 归属。
+此前诊断线程消费 `state=2` body 后没有任何路径通知 host pool 回收，导致已完成操作永久占用 16 个 LRU slot。本轮在 planner 写入 channel work 时登记预期 body，且 CCL-D 开启时避免不同 work 合并到一个 device batch；诊断线程输出 complete 记录后按该 TraceID 消费 body，全部已登记 body 消费后释放 slot。状态机单测已通过，但 RCCL 重编译和运行回归尚未完成，因此不能声称 RESOURCE_EXHAUSTED 已在运行时消失。
+
+当前实现还不能证明同一 TraceID 在同一 channel 的多 plan/work 计数被聚合为一个最终 body；P2P work 同时带 send/recv 两侧身份，而 device diag 当前只选一侧身份，双向 TraceID 的归属与回收仍需调整。AllToAll 父操作关联、Simple/LL/LL128 计数语义、真实 slow/hang 决策仍是独立未完成项。
 
 源码审计还确认：`rcclCcldRecordEnqueue()` 目前在 `ncclEnqueueCheck()` 的 `taskAppend()` 之前执行，而 `comm->opCount` 的推进发生在 proxy 提交路径。因而不能直接把当前 enqueue 日志中的 `comm->opCount` 当作已经稳定分配的材料级操作 counter；分组调用和 plan 内多个 task 的归属必须先在 host planner 侧明确。
 

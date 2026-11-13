@@ -15,6 +15,7 @@ struct ncclCollTrace;
 // Record the host-side beginning of a collective operation.  The recorder is
 // disabled by default and is intentionally independent of the transport path.
 void rcclCcldRecordEnqueue(struct ncclInfo* info);
+void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter);
 bool rcclCcldEnabled();
 
 // Release per-communicator diagnostic state after RCCL has accepted destroy.

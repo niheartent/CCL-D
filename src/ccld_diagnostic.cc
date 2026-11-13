@@ -94,6 +94,8 @@ bool rcclCcldEnabled() { return enabled(); }
 
 void rcclCcldRecordEnqueue(struct ncclInfo* info) {
   if (!info || !info->comm || !enabled()) return;
+  info->ccldCounter = UINT64_MAX;
+  if (info->comm->nRanks <= 1 || info->count == 0) return;
   std::lock_guard<std::mutex> guard(g_lock);
   init(info->comm);
   if (!g_log) return;
@@ -115,7 +117,7 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
     return;
   }
   uint32_t kernelIndex = UINT32_MAX;
-  const bool reserved = poolIt->second->reserve(counter, 1, &kernelIndex) == rccl_ccld::ReserveResult::Reserved;
+  const bool reserved = poolIt->second->reserve(counter, 0, &kernelIndex) == rccl_ccld::ReserveResult::Reserved;
   if (!reserved) kernelIndex = UINT32_MAX;
   if (reserved) poolIt->second->markRunning(kernelIndex);
   info->ccldKernelIndex = kernelIndex;
@@ -146,6 +148,15 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
   g_log.flush();
 }
 
+void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter) {
+  if (!comm || !enabled() || counter == UINT64_MAX) return;
+  std::lock_guard<std::mutex> guard(g_lock);
+  auto it = g_pools.find(comm);
+  if (it == g_pools.end()) return;
+  uint32_t index = UINT32_MAX;
+  if (it->second->find(counter, &index)) it->second->registerBody(counter, index);
+}
+
 void rcclCcldForgetComm(const struct ncclComm* comm) {
   if (!comm) return;
   std::lock_guard<std::mutex> guard(g_lock);
@@ -157,7 +168,15 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
   if (!comm || !diag || !enabled()) return;
   std::lock_guard<std::mutex> guard(g_lock);
   init(comm);
-  if (!g_log) return;
+  if (!g_log) {
+    auto poolIt = g_pools.find(comm);
+    if (poolIt != g_pools.end()) {
+      uint32_t index = UINT32_MAX;
+      if (poolIt->second->find(diag->ccldCounter, &index))
+        poolIt->second->consumeBody(diag->ccldCounter, index, 1 + diag->droppedBatches);
+    }
+    return;
+  }
   std::ostringstream traceId;
   traceId << std::hex << std::setw(16) << std::setfill('0') << comm->commHash
           << ':' << std::dec << diag->ccldCounter;
@@ -244,6 +263,12 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
   }
   g_log << "}\n";
   g_log.flush();
+  auto poolIt = g_pools.find(comm);
+  if (poolIt != g_pools.end()) {
+    uint32_t index = UINT32_MAX;
+    if (poolIt->second->find(diag->ccldCounter, &index))
+      poolIt->second->consumeBody(diag->ccldCounter, index, 1 + diag->droppedBatches);
+  }
 }
 
 void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t opCount,

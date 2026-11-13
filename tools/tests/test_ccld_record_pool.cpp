@@ -40,8 +40,24 @@ int main() {
   assert(pool.markMissingCompletion(c));
   assert(pool.release(c));
 
+  // A multi-channel/multi-plan TraceID pins its LRU body until every body
+  // scheduled by the planner has been consumed by the diagnostic thread.
+  assert(pool.reserve(13, 0, &c) == ReserveResult::Reserved);
+  assert(pool.markRunning(c));
+  assert(pool.registerBody(13, c));
+  assert(pool.registerBody(13, c));
+  assert(pool.registerBody(13, c));
+  assert(!pool.consumeBody(12, c));
+  // One completed body can account for one following device batch that was
+  // explicitly marked dropped while the per-channel body was still busy.
+  assert(pool.consumeBody(13, c, 2));
+  assert(pool.view(c, &view) && view.state == RecordState::Running);
+  assert(pool.reserve(14, 0, &b) == ReserveResult::ResourceExhausted);
+  assert(pool.consumeBody(13, c));
+  assert(pool.reserve(14, 0, &b) == ReserveResult::Reserved);
+  assert(!pool.consumeBody(13, c));
+
   assert(!pool.markRunning(999));
-  assert(pool.reserve(13, 0, &c) == ReserveResult::ResourceExhausted);
   std::cout << "record pool lifecycle PASS\n";
   return 0;
 }

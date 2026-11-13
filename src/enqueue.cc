@@ -128,7 +128,8 @@ static ncclResult_t addProxyOpIfNeeded(struct ncclComm* comm, struct ncclKernelP
 static void addWorkBatchToPlan(
     struct ncclComm* comm, struct ncclKernelPlan* plan, int channelId,
     enum ncclDevWorkType workType, int devFuncId, uint32_t workOffset,
-    int p2pRound = -1
+    int p2pRound = -1, uint64_t ccldCounter = UINT64_MAX,
+    uint32_t ccldKernelIndex = UINT32_MAX
   ) {
   ncclKernelPlanner::WipPlan::Channel* chan = &comm->planner.wipPlan.channels[channelId];
   size_t workSize = ncclDevWorkSize(workType);
@@ -152,6 +153,9 @@ static void addWorkBatchToPlan(
       }
     }
   }
+  // A device batch currently carries diagnostic identity through its first
+  // work item. Keep CCL-D work isolated so unrelated TraceIDs cannot be merged.
+  if (rcclCcldEnabled() && ccldKernelIndex != UINT32_MAX) newBatch = true;
   // Conditions causing us to create an extension batch (prev->nextExtends=1)
   uint32_t offset = newBatch ? 0 : (workOffset - batch->offsetBase);
   bool extendBatch = 63*workSize < offset;
@@ -180,6 +184,8 @@ static void addWorkBatchToPlan(
     plan->nWorkBatches += 1;
   }
   batch->offsetBitset |= 1ull<<(offset/workSize);
+  if (rcclCcldEnabled() && ccldKernelIndex != UINT32_MAX)
+    rcclCcldRegisterBody(comm, ccldCounter);
   chan->wipBatch.workBytes += workSize;
   if (workType == ncclDevWorkTypeP2p) {
     // We need to ensure that a single batch doesn't have multiple p2p's
@@ -706,7 +712,8 @@ static ncclResult_t scheduleCollTasksToPlan(
       for (int c=devWork->channelLo; c <= (int)devWork->channelHi; c++) {
         proxyOp.channelId = c;
         proxyOp.opCount = proxyOpId;
-        addWorkBatchToPlan(comm, plan, c, workNode->workType, task->devFuncId, plan->workBytes);
+        addWorkBatchToPlan(comm, plan, c, workNode->workType, task->devFuncId, plan->workBytes,
+                           -1, devWork->ccldCounter, devWork->ccldKernelIndex);
         NCCLCHECK(addProxyOpIfNeeded(comm, plan, &proxyOp));
       }
     } else { // not task->isCollnet
@@ -814,7 +821,8 @@ static ncclResult_t scheduleCollTasksToPlan(
         }
         proxyOp->channelId = c;
         proxyOp->opCount = proxyOpId;
-        addWorkBatchToPlan(comm, plan, c, workNode->workType, task->devFuncId, plan->workBytes);
+        addWorkBatchToPlan(comm, plan, c, workNode->workType, task->devFuncId, plan->workBytes,
+                           -1, devWork->ccldCounter, devWork->ccldKernelIndex);
         NCCLCHECK(addProxyOpIfNeeded(comm, plan, proxyOp));
       }
     }
@@ -1054,7 +1062,9 @@ static ncclResult_t addP2pToPlan(
     plan->channelMask.masks[channelId/64] |= uint64_t(1)<<(channelId%64);
     // Add batch first.
     int funcIdx = ncclDevFuncId_P2p();
-    addWorkBatchToPlan(comm, plan, channelId, ncclDevWorkTypeP2p, funcIdx, workOffset, p2pRound);
+    const uint64_t bodyCounter = sendP2p && sendP2p->ccldKernelIndex != UINT32_MAX ? sendP2p->ccldCounter : recvP2p ? recvP2p->ccldCounter : UINT64_MAX;
+    const uint32_t bodyIndex = sendP2p && sendP2p->ccldKernelIndex != UINT32_MAX ? sendP2p->ccldKernelIndex : recvP2p ? recvP2p->ccldKernelIndex : UINT32_MAX;
+    addWorkBatchToPlan(comm, plan, channelId, ncclDevWorkTypeP2p, funcIdx, workOffset, p2pRound, bodyCounter, bodyIndex);
     if (funcIdx < 0) {
       WARN("%s: unsupported collective. Please ensure the collective has been enabled in build.", __func__);
       return ncclInvalidUsage;

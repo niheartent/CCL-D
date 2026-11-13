@@ -58,4 +58,10 @@
 - 诊断线程消费最终 body 后立即进入 `CONSUMED → FREE`；
 - body 不足时只产生显式观测缺口，不能阻塞通信，也不能把该样本当作正常诊断通过。
 
+## 当前代码接线状态（2026-11-13）
+
+planner 在 channel work 加入 plan 时登记该 TraceID 预期产生的 body 数；启用 CCL-D 时，不把不同 work 合入同一 device batch。诊断线程记录 `state=2` body 后，按 `1 + droppedBatches` 消费数量；完成或被明确标记丢弃的所有已登记 body 消费后释放记录。这样资源耗尽和因 body 忙导致的观测丢失不会阻塞通信，丢失仍由 `dropped_batches` 暴露。
+
+该接线仍是运行时验证前的实现，不代表完整操作聚合已经完成。同一 TraceID 在同一 channel 跨多个 plan 时，设备只有 `channel × kernelIndex` 单 body；P2P 一条 work 同时有 send/recv 两个用户操作时，当前 device diag 只选一侧 identity。后续必须通过双节点多轮测试验证 body 计数/回收，并为 P2P 两侧和跨 plan 聚合补充明确的 operation/body 关联。未验证前不得将其标记为材料级完成。
+
 这样既保留材料要求的高频 channel 指标，又避免多 plan/channel 被拆成多个操作身份。

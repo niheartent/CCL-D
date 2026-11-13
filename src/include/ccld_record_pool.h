@@ -29,6 +29,8 @@ struct RecordView {
   RecordState state = RecordState::Free;
   uint32_t expectedChannels = 0;
   uint32_t completedChannels = 0;
+  uint32_t expectedBodies = 0;
+  uint32_t consumedBodies = 0;
 };
 
 // Host-side lifecycle model for pinned diagnostic bodies. Device storage is
@@ -45,7 +47,7 @@ class RecordPool {
   }
 
   ReserveResult reserve(uint64_t counter, uint32_t channels, uint32_t* kernelIndex) {
-    if (channels == 0 || kernelIndex == nullptr) return ReserveResult::ResourceExhausted;
+    if (kernelIndex == nullptr) return ReserveResult::ResourceExhausted;
     std::lock_guard<std::mutex> lock(mutex_);
     size_t selected = slots_.size();
     uint64_t oldest = std::numeric_limits<uint64_t>::max();
@@ -61,6 +63,8 @@ class RecordPool {
     slot.view.counter = counter;
     slot.view.expectedChannels = channels;
     slot.view.completedChannels = 0;
+    slot.view.expectedBodies = 0;
+    slot.view.consumedBodies = 0;
     slot.view.state = RecordState::Reserved;
     slot.channelDone.assign(channels, false);
     slot.channelRegistered.assign(channels, false);
@@ -95,6 +99,32 @@ class RecordPool {
     if (!slot->channelRegistered[channel]) {
       slot->channelRegistered[channel] = true;
       ++slot->view.expectedChannels;
+    }
+    return true;
+  }
+
+  bool registerBody(uint64_t counter, uint32_t index) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Slot* slot = get(index);
+    if (!slot || slot->view.counter != counter ||
+        (slot->view.state != RecordState::Running && slot->view.state != RecordState::Reserved)) return false;
+    ++slot->view.expectedBodies;
+    return true;
+  }
+
+  // Device body completion notifications can arrive in any channel order.
+  // Keep the slot pinned until every planner-registered body was consumed.
+  bool consumeBody(uint64_t counter, uint32_t index, uint32_t bodyCount = 1) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Slot* slot = get(index);
+    if (!slot || slot->view.counter != counter ||
+        (slot->view.state != RecordState::Running && slot->view.state != RecordState::Reserved) ||
+        slot->view.consumedBodies >= slot->view.expectedBodies || slot->view.expectedBodies == 0 || bodyCount == 0) return false;
+    const uint32_t remaining = slot->view.expectedBodies - slot->view.consumedBodies;
+    slot->view.consumedBodies += std::min(bodyCount, remaining);
+    if (slot->view.consumedBodies == slot->view.expectedBodies) {
+      slot->view.state = RecordState::Consumed;
+      releaseLocked(*slot);
     }
     return true;
   }
@@ -134,6 +164,26 @@ class RecordPool {
     return true;
   }
 
+  bool observeCompletedBody(uint64_t counter, uint32_t index) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Slot* slot = get(index);
+    if (!slot || slot->view.counter != counter ||
+        (slot->view.state != RecordState::Reserved && slot->view.state != RecordState::Running)) return false;
+    slot->view.state = RecordState::Complete;
+    ++slot->view.completedChannels;
+    return true;
+  }
+
+  bool releaseIfAllBodiesConsumed(uint64_t counter, uint32_t index) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Slot* slot = get(index);
+    if (!slot || slot->view.counter != counter || slot->view.state != RecordState::Complete ||
+        slot->view.completedChannels != slot->view.expectedChannels) return false;
+    slot->view.state = RecordState::Consumed;
+    releaseLocked(*slot);
+    return true;
+  }
+
   bool markConsumed(uint32_t index) {
     return transition(index, RecordState::Complete, RecordState::Consumed);
   }
@@ -145,15 +195,7 @@ class RecordPool {
                   slot->view.state != RecordState::MissingCompletion &&
                   slot->view.state != RecordState::ObservationDropped &&
                   slot->view.state != RecordState::ResourceExhausted)) return false;
-    slot->view.state = RecordState::Free;
-    slot->view.counter = 0;
-    slot->view.expectedChannels = 0;
-    slot->view.completedChannels = 0;
-    slot->channelDone.clear();
-    slot->channelRegistered.clear();
-    slot->expectedPlans = 0;
-    slot->completedPlans = 0;
-    slot->lastUse = ++clock_;
+    releaseLocked(*slot);
     return true;
   }
 
@@ -206,6 +248,20 @@ class RecordPool {
     if (!slot || slot->view.state != from) return false;
     slot->view.state = to;
     return true;
+  }
+
+  void releaseLocked(Slot& slot) {
+    slot.view.state = RecordState::Free;
+    slot.view.counter = 0;
+    slot.view.expectedChannels = 0;
+    slot.view.completedChannels = 0;
+    slot.view.expectedBodies = 0;
+    slot.view.consumedBodies = 0;
+    slot.channelDone.clear();
+    slot.channelRegistered.clear();
+    slot.expectedPlans = 0;
+    slot.completedPlans = 0;
+    slot.lastUse = ++clock_;
   }
 
   mutable std::mutex mutex_;
