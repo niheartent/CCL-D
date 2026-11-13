@@ -7,7 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ccld_analyze import (analyze, analyze_completions,
                           analyze_completion_windows, analyze_progress_samples,
-                          analyze_operation_semantics, load_records)
+                          analyze_operation_semantics, analyze_p2p_completions,
+                          load_records)
 
 
 def record(rank, *, op="AllReduce", byte_count=4096, ts=1_000_000_000,
@@ -33,6 +34,65 @@ class CcldAnalyzeTest(unittest.TestCase):
         rows[1]["root"] = 0
         result = analyze_operation_semantics(rows)[0]
         self.assertEqual(result["status"], "OK")
+
+    def test_grouped_p2p_pairs_by_shared_op_count_not_per_call_counter(self):
+        send = record(0, op="Send", counter=40, nranks=2)
+        recv = record(1, op="Recv", counter=41, nranks=2)
+        send.update(root=1, op_count=12, count=32, bytes=128)
+        recv.update(root=0, op_count=12, count=32, bytes=128)
+        results = analyze_operation_semantics([send, recv])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["status"], "OK")
+        self.assertEqual(results[0]["counter"], "12")
+        self.assertEqual(results[0]["grouping"], "op_count")
+
+    def test_grouped_p2p_detects_size_mismatch_across_call_counters(self):
+        send = record(0, op="Send", counter=50, nranks=2)
+        recv = record(1, op="Recv", counter=51, nranks=2, byte_count=2048)
+        send.update(root=1, op_count=13)
+        recv.update(root=0, op_count=13)
+        result = analyze_operation_semantics([send, recv])[0]
+        self.assertEqual(result["status"], "P2P_TRANSFER_MISMATCH")
+        self.assertEqual(result["evidence"]["edge_mismatches"][0]["fields"]["bytes"], [4096, 2048])
+
+    def test_grouped_p2p_op_counts_remain_separate(self):
+        rows = []
+        for op_count in (14, 15):
+            send = record(0, op="Send", counter=op_count * 2, nranks=2)
+            recv = record(1, op="Recv", counter=op_count * 2 + 1, nranks=2)
+            send.update(root=1, op_count=op_count)
+            recv.update(root=0, op_count=op_count)
+            rows.extend((send, recv))
+        results = analyze_operation_semantics(rows)
+        self.assertEqual(len(results), 2)
+        self.assertEqual([row["counter"] for row in results], ["14", "15"])
+        self.assertTrue(all(row["status"] == "OK" for row in results))
+
+    def test_p2p_device_completion_uses_host_op_count_association(self):
+        send = record(0, op="Send", counter=70, nranks=2)
+        recv = record(1, op="Recv", counter=71, nranks=2)
+        send.update(root=1, op_count=22)
+        recv.update(root=0, op_count=22)
+        completions = [
+            {"phase": "complete", "comm_id": "abcd", "counter": 70,
+             "rank": 0, "algorithm": 255,
+             "send_peers": [{"peer": 1, "bytes": 128}], "recv_peers": []},
+            {"phase": "complete", "comm_id": "abcd", "counter": 71,
+             "rank": 1, "algorithm": 255,
+             "send_peers": [], "recv_peers": [{"peer": 0, "bytes": 128}]},
+        ]
+        result = analyze_p2p_completions([send, recv, *completions])[0]
+        self.assertEqual(result["status"], "P2P_DEVICE_EVIDENCE")
+        self.assertEqual(result["counter"], "22")
+        self.assertEqual(result["edge_evidence"]["0->1"],
+                         {"send_bytes": 128, "recv_bytes": 128})
+
+    def test_alltoall_device_rows_are_not_reported_as_orphan_p2p(self):
+        enqueue = record(0, op="AllToAll", counter=8, nranks=2)
+        completion = {"phase": "complete", "comm_id": "abcd", "counter": 8,
+                      "rank": 0, "algorithm": 255,
+                      "send_peers": [], "recv_peers": []}
+        self.assertEqual(analyze_p2p_completions([enqueue, completion]), [])
 
     def test_broadcast_root_role_is_checked(self):
         rows = [record(0, op="Broadcast"), record(1, op="Broadcast")]

@@ -152,11 +152,20 @@ def analyze_operation_semantics(records):
     enqueues = [r for r in records if r.get("phase") == "enqueue"]
     groups = defaultdict(list)
     for row in enqueues:
-        key = (str(row.get("comm_id", "unknown")),
-               str(row.get("counter", row.get("trace_id", "unknown"))))
+        comm_id = str(row.get("comm_id", "unknown"))
+        op = str(row.get("op", ""))
+        if op in ("Send", "Recv") and row.get("op_count") is not None:
+            # RCCL gives each API call in a grouped P2P launch its own CCL-D
+            # counter, while the group shares one opCount. Pair the send/recv
+            # contract at that group boundary, not by the per-call TraceID.
+            key = (comm_id, "p2p-op-count", str(row["op_count"]))
+        else:
+            key = (comm_id, "trace", str(row.get("counter", row.get("trace_id", "unknown"))))
         groups[key].append(row)
     results = []
-    for (comm_id, counter), rows in sorted(groups.items()):
+    for group_key, rows in sorted(groups.items()):
+        comm_id = group_key[0]
+        counter = group_key[-1]
         ops = sorted({str(r.get("op", "")) for r in rows})
         if not ops:
             continue
@@ -230,6 +239,8 @@ def analyze_operation_semantics(records):
                   "status": status, "operation": op, "evidence": evidence,
                   "root_cause": root["root_cause"], "confidence": root["confidence"],
                   "first_error_rank": root["first_error_rank"]}
+        if group_key[1] == "p2p-op-count":
+            result["grouping"] = "op_count"
         if status != "OK":
             result["root_cause"] = {"P2P_PEER_MISSING": "P2P_PEER_RELATION_MISMATCH",
                                      "P2P_TRANSFER_MISMATCH": "P2P_TRANSFER_SIZE_MISMATCH",
@@ -541,20 +552,56 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
     return results
 
 def analyze_p2p_completions(records):
-    """Expose P2P device evidence without applying collective rank semantics.
+    """Summarize P2P device peer evidence under its host P2P group.
 
-    P2P work carries independent sendOpCount/recvOpCount values. The current
-    completion schema exports only one selected counter, so cross-rank edge
-    pairing cannot safely be asserted from these records yet. Host enqueue
-    records are checked edge-by-edge by analyze_operation_semantics().
+    Send and Recv API calls have separate TraceIDs. When RCCL groups them into
+    one launch, ``op_count`` is the shared host grouping key; device completion
+    rows can therefore be associated with either API counter without claiming
+    that the counters themselves are equal. AllToAll completions share the
+    parent AllToAll counter and are excluded here because that parent is checked
+    as a collective by ``analyze_operation_semantics``.
     """
+    enqueue_by_counter = {}
+    p2p_groups = defaultdict(list)
+    for row in records:
+        if row.get("phase") != "enqueue":
+            continue
+        comm_id = str(row.get("comm_id", "unknown"))
+        counter = str(row.get("counter", "unknown"))
+        enqueue_by_counter[(comm_id, counter, int(row.get("rank", -1)))] = row
+        if row.get("op") in ("Send", "Recv"):
+            group_id = str(row.get("op_count", counter))
+            p2p_groups[(comm_id, group_id)].append(row)
     groups = defaultdict(list)
     for row in records:
-        if row.get("phase") == "complete" and row.get("algorithm") == 255:
-            groups[(str(row.get("comm_id", "unknown")),
-                    str(row.get("counter", "unknown")))].append(row)
+        if row.get("phase") != "complete" or row.get("algorithm") != 255:
+            continue
+        comm_id = str(row.get("comm_id", "unknown"))
+        rank = int(row.get("rank", -1))
+        counter = str(row.get("counter", "unknown"))
+        enqueue = enqueue_by_counter.get((comm_id, counter, rank))
+        related = row.get("related_counter")
+        related_enqueue = (enqueue_by_counter.get((comm_id, str(related), rank))
+                           if related is not None else None)
+        owners = [item for item in (enqueue, related_enqueue)
+                  if item is not None and item.get("op") in ("Send", "Recv")]
+        if not owners:
+            # Device records belonging to AllToAll are already represented by
+            # its parent TraceID; ignore those instead of calling them orphaned.
+            if enqueue and enqueue.get("op") in ("AllToAll", "AllToAllPivot"):
+                continue
+            groups[(comm_id, "unassociated")].append(row)
+            continue
+        group_ids = {str(item.get("op_count", item.get("counter", "unknown")))
+                     for item in owners}
+        for group_id in group_ids:
+            groups[(comm_id, group_id)].append(row)
     results = []
-    for (comm_id, counter), rows in sorted(groups.items()):
+    for (comm_id, group_id), rows in sorted(groups.items()):
+        if group_id == "unassociated":
+            status = "P2P_COMPLETION_UNCORRELATED"
+        else:
+            status = "P2P_DEVICE_EVIDENCE"
         edges = defaultdict(lambda: {"send_bytes": 0, "recv_bytes": 0})
         ranks = set()
         for row in rows:
@@ -564,14 +611,15 @@ def analyze_p2p_completions(records):
                 for item in row.get(field, []) or []:
                     edge = (rank, int(item[peer_field])) if direction == "send_bytes" else (int(item[peer_field]), rank)
                     edges[edge][direction] += int(item.get("bytes", 0))
-        results.append({"comm_id": comm_id, "counter": counter,
-                        "status": "P2P_COMPLETION_UNCORRELATED",
-                        "root_cause": "P2P_COMPLETION_NEEDS_DIRECTIONAL_TRACE_ID",
-                        "confidence": "low", "first_error_rank": None,
+        results.append({"comm_id": comm_id, "counter": group_id,
+                        "status": status,
+                        "root_cause": "NONE" if status == "P2P_DEVICE_EVIDENCE" else "P2P_COMPLETION_NEEDS_HOST_ASSOCIATION",
+                        "confidence": "medium" if status == "P2P_DEVICE_EVIDENCE" else "low",
+                        "first_error_rank": None,
                         "ranks": sorted(ranks), "records": len(rows),
                         "edge_evidence": {f"{a}->{b}": value for (a, b), value in sorted(edges.items())},
-                        "evidence": {"reason": "completion currently exports one selected opCount; "
-                                    "sendOpCount and recvOpCount are not separately correlated"}})
+                        "evidence": {"association": "host op_count",
+                                     "reason": "directional send/recv counters remain separate"}})
     return results
 
 def analyze_completion_windows(records, *, window_size=5, slow_rate_ratio=0.5,

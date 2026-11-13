@@ -12,7 +12,7 @@
 | UCX/MPI 双节点启动 | 已验证基础路径 | Open MPI 5.0.3，双节点 8 rank 启动成功 |
 | 五类数据面回归 | 已验证 | AllGather、ReduceScatter、Broadcast、AllToAll、P2P 数据结果通过 |
 | 8 rank、20 轮、count 4096 | 数据面通过 | `slot_regression PASS` |
-| Python analyzer/monitor 单测 | 已完成 | 最近一次 39 项通过 |
+| Python analyzer/monitor 单测 | 已完成 | 最近一次 44 项通过；新增真实 grouped P2P 配对和 device completion 关联测试 |
 | 参数/缺失 rank 合成注入 | 已验证 | `MISMATCH`、`MISSING_RANK` |
 | slow/stall/missing completion 合成日志 | 已验证分析器路径 | 不等价于真实 GPU/网络故障 |
 | host 分配 `kernelIndex` 并传入 collective/P2P work | 已接入并完成独立 gfx936 构建 | 跨 plan 的完整 operation callback 仍待补齐 |
@@ -28,7 +28,7 @@
 | diagnostic thread 周期采样 | 部分实现 | 有轮询 sample，当前默认 10 ms；材料正文给出默认约 200 微秒，示例又使用 1 ms 精度，必须通过实测确定本实现的有效口径 |
 | kernel host callback 通知结束 | 未完成 | 当前以诊断线程观察 device body 完成状态作为回收信号；尚未实现材料级 kernel host callback 与 plan/work/channel 整体结束通知 |
 | 多 work/batch 归属同一操作 TraceID | 未完成 | 当前 kernel 侧不能证明 batch 内所有 work 都正确归入同一操作记录 |
-| AllToAll 保留父操作身份 | 未完成 | RCCL 当前路径展开为 P2P Send/Recv，尚未记录 parent operation |
+| AllToAll 保留父操作身份 | 已接入并完成单轮验证 | 外层 AllToAll TraceID 已传给展开的 P2P work；monitor 回放显示 AllToAll 作为独立操作为 `OK`。长稳和跨 plan 仍待验证 |
 | Simple/LL/LL128 精确计数点 | 未完成 | 材料要求不同 primitive 位置，当前统一计数宏尚未逐路径对照验证 |
 | Ring 全局比较 | 部分实现 | 规则已写入 analyzer，但真实数据完整性和长期回归未完成 |
 | Tree 同层比较 | 部分实现 | 规则已写入 analyzer，但真实多节点 Tree 回归未完成 |
@@ -45,11 +45,18 @@
 
 ## 当前明确问题
 
+### P2P monitor 关联修正（2026-11-13）
+
+- grouped Send/Recv 的 API 调用有各自 `counter`，RCCL `op_count` 标识共同的 grouped launch。分析器已改为按 `(comm_id, op_count)` 检查双方 peer、count、bytes、datatype，不再按独立 TraceID 拆开产生 `P2P_PEER_MISSING`。
+- device P2P completion 通过其 enqueue counter（及可用的 related counter）回连到同一 host `op_count`，输出 `P2P_DEVICE_EVIDENCE`，避免把可关联的完成证据统称为 uncorrelated。
+- 回放 `ccld-artifacts/lifecycle-5iter-20261113T035616Z`：5 个 P2P group 均为 `OK`，5 组 device evidence 均已关联；monitor 无 `P2P_PEER_MISSING` 或 `P2P_COMPLETION_UNCORRELATED`。monitor 汇总 58 条 `OK`、12 条 Ring topology asymmetry、5 条 P2P device evidence。
+- 分析器回归为 44 项通过。Ring asymmetry 与 P2P peer 缺失不同，是另一个仍需用 topology-aware 规则和真实拓扑检查的信号。
+
 ### 2026-11-13 VMFault 隔离结果
 
 - 完整函数集安装版 `full-gfx936/install` 在本机 2/3/4 rank 和 HPDPS-6/7 双节点 2/4/8 rank、2 轮五算子回归均通过。
 - 因此前一次 VMFault 不是双节点 RCCL 数据面必现问题；触发环境与开发窄函数安装版混用有关，后续验收不得使用窄函数安装前缀做完整能力测试。
-- 完整安装版开启 CCL-D 后通信仍通过，但 `RESOURCE_EXHAUSTED` 随迭代增长：1/5/20 轮分别为 40/712/3232 条。该现象确认 slot 生命周期回收仍未解决，但没有造成通信 hang。
+- 历史安装版开启 CCL-D 后通信仍通过，但 `RESOURCE_EXHAUSTED` 随迭代增长；该现象来自当时未接入 body 回收和 AllToAll 子操作拆分。
 
 ## 2026-11-11 完整 gfx936 构建与双节点回归
 
@@ -67,7 +74,7 @@
 
 源码审计还确认：`rcclCcldRecordEnqueue()` 目前在 `ncclEnqueueCheck()` 的 `taskAppend()` 之前执行，而 `comm->opCount` 的推进发生在 proxy 提交路径。因而不能直接把当前 enqueue 日志中的 `comm->opCount` 当作已经稳定分配的材料级操作 counter；分组调用和 plan 内多个 task 的归属必须先在 host planner 侧明确。
 
-因此，当前不能把 `dropped_batches=0`、扩大 slot 数量或一次回归 PASS 当作完整诊断实现的证明。
+因此，当前不能把 `dropped_batches=0` 或一次回归 PASS 当作完整诊断实现的证明；本轮 5 轮验证已确认 P2P/AllToAll 分析关联和 slot 回收没有立即退化，仍需长稳及跨 plan 验收。
 
 ## 当前完成度口径
 
