@@ -29,6 +29,13 @@
 - 100 轮测试中 10,000 条 completion 均来自 CCL-D body 路径，没有 legacy 伪 completion；
 - 通信数据和 monitor 检查通过。
 
+本次 plan 定向收口版本重新编译后，双节点 8 rank AllReduce 100 轮也通过：
+
+- 构建产物：`ccld-artifacts/reinstall-gfx936-root/lib/librccl.so.1.0`；
+- 800/800 条 enqueue 为 `RECORDED`，无 `RESOURCE_EXHAUSTED`；
+- 12,800 条 completion 与 800 个 rank/TraceID 组合一致；
+- 训练通信数据正确，monitor 退出码为 0。
+
 此前出现的资源耗尽来自两个已修复的实现错误：无 slot 的 work 被合并到前一个诊断 batch，以及旧 collTrace 路径重复输出无 body completion。不能再把旧测试结果当作当前版本结论。
 
 ## 尚需验收的内容
