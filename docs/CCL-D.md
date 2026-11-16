@@ -8,11 +8,11 @@
 
 device 侧按协议记录通信计数：Simple 的 send/recv 计数点均在 generic operation 末尾；LL/LL128 的 send 计数点在 waitSend 之后，recv 计数点在 generic operation 末尾。诊断线程周期性读取 buffer 并计算 sendRate/recvRate；kernel host callback 在 kernel 结束时通知诊断线程，输出操作级结果。材料描述 mode 0 为关闭、mode 1 为每 channel 的 tid0 计数、mode 2 为每 channel 所有 tid 原子计数。通信域创建/销毁与诊断线程资源绑定。
 
-分析比较方式：Ring 在同一轮次比较各 rank；Tree 比较同一层 rank。材料提到 slow/hang 诊断，但当前文档稿没有给出完整案例清单或可直接复刻的决策树规则。材料对采样精度也有 200 微秒和 1 毫秒两处不同描述，因此本项目不能据此声称复刻了唯一的精度值。
+图示还明确了三层观测关系：通信域提供 rank/channel/path 信息，操作层区分 collective、Ring/Tree 和 Simple/LL/LL128，传输层对应 channel 及 P2P 链路；TraceID、TOPO 和 kernel diagnose 汇入 host/kernel status，再交给 slow/hang decision analyzer。Ring 在同一轮次比较各 rank；Tree 比较同一层 rank。slow 流程先判断 trace 通信耗时是否超过基线，再用 rank 粒度 trace 的步调和 sendRate/recvRate 缩小根因；hang 流程先判断是否有 rank 未进入，其次区分已进入但未 hang 的 rank，最后在全体停滞时比较收发计数。材料对采样精度有 200 微秒和 1 毫秒两处描述，因此本项目不据此声称唯一精度值。
 
 ## 本仓库实现状态
 
-代码已经具备 RCCL host/device 记录路径、Simple/LL/LL128 计数插点、按 channel 的 pinned-memory 诊断区、诊断线程采样/完成快照，以及 JSONL 输出和 Python 分析器。它证明了数据采集链路已接通；协议计数数值与材料语义仍需逐协议验收，分析器也不能据此称为完整复刻材料中的决策树。
+代码已经具备 RCCL host/device 记录路径、Simple/LL/LL128 计数插点、按 channel 的 pinned-memory 诊断区、诊断线程采样/完成快照，以及 JSONL 输出和 Python 分析器。analyzer 已输出 host/kernel 状态和图示决策路径的证据字段；这仍不等于真实 slow/hang 场景的端到端验收。协议计数数值与材料语义仍需逐协议核对。
 
 历史双节点回归曾验证 AllReduce 与 AllGather、ReduceScatter、Broadcast、AllToAll、P2P 的通信数据正确性及记录输出。具体环境、提交和原始结果应以 [状态记录](CCL-D_STATUS.md) 指向的实际产物为准；这些回归不等于 slow/hang 定位能力已被证明。
 

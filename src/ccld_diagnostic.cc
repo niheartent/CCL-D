@@ -165,7 +165,9 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
         << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
         << ",\"op\":\"" << op << "\",\"count\":" << count
         << ",\"bytes\":" << bytes << ",\"datatype\":" << static_cast<int>(info->datatype)
-        << ",\"root\":" << info->root << ",\"kernel_index\":";
+        << ",\"root\":" << info->root
+        << ",\"path_type\":\"" << ((std::string(op) == "Send" || std::string(op) == "Recv") ? "p2p" : "collective")
+        << "\",\"host_status\":\"entered\",\"kernel_index\":";
   if (kernelIndex == UINT32_MAX) g_log << "null";
   else g_log << kernelIndex;
   g_log << ",\"diagnostic_status\":\"" << (reserved ? "RECORDED" : "RESOURCE_EXHAUSTED") << "\"}\n";
@@ -289,6 +291,7 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
         << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
         << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
         << ",\"channel\":" << diag->channel
+        << ",\"path_type\":\"" << (diag->algorithm == 255 ? "p2p" : "collective") << "\""
         << ",\"algorithm\":" << static_cast<int>(diag->algorithm)
         << ",\"protocol\":" << static_cast<int>(diag->protocol)
         << ",\"send_count\":" << diag->sendCount
@@ -333,7 +336,8 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
   g_log << ']'
         << ",\"start_timestamp\":" << startTimestamp
         << ",\"end_timestamp\":" << endTimestamp
-        << ",\"complete\":" << (complete ? "true" : "false");
+        << ",\"complete\":" << (complete ? "true" : "false")
+        << ",\"kernel_status\":\"" << (complete ? "complete" : "hang") << "\"";
   if (diag->algorithm == NCCL_ALGO_TREE && diag->channel < MAXCHANNELS) {
     const ncclTree& tree = comm->channels[diag->channel].tree;
     g_log << ",\"tree_up\":" << tree.up

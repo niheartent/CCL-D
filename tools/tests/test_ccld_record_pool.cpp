@@ -29,31 +29,25 @@ int main() {
   rccl_ccld::RecordView view;
   assert(pool.view(a, &view) && view.counter == 10 && view.state == RecordState::Reserved);
   assert(pool.markRunning(a));
-  assert(pool.markChannelComplete(a, 0));
-  assert(!pool.markPlanComplete(a));
-  assert(pool.markChannelComplete(a, 1));
-  assert(!pool.markChannelComplete(a, 1));
-  assert(pool.markPlanComplete(a));
-  assert(pool.markConsumed(a));
-  assert(pool.release(a));
+  assert(pool.registerBody(10, a, 0));
+  assert(pool.consumeBody(10, a));
 
   // A released body is reusable; stale lifecycle transitions are rejected.
   assert(pool.reserve(12, 1, &c) == ReserveResult::Reserved);
   assert(c == a);
-  assert(!pool.markConsumed(c));
   assert(pool.markRunning(c));
-  assert(pool.markMissingCompletion(c));
-  assert(pool.release(c));
+  assert(pool.registerBody(12, c, 0));
+  assert(pool.consumeBody(12, c));
 
-  // A multi-channel/multi-plan TraceID pins its LRU body until every body
-  // scheduled by the planner has been consumed by the diagnostic thread.
+  // A multi-channel TraceID stays pinned until every registered body is
+  // consumed by the diagnostic thread.
   assert(pool.reserve(13, 0, &c) == ReserveResult::Reserved);
   assert(pool.markRunning(c));
   assert(pool.registerBody(13, c, 1));
-  assert(pool.registerBody(13, c, 1)); // same channel body across plans
+  assert(pool.registerBody(13, c, 1)); // duplicate channel is ignored
   assert(pool.registerBody(13, c, 2));
   assert(!pool.consumeBody(12, c));
-  // A channel body is consumed once after the operation-level callback.
+  // Each registered channel body is consumed once after its callback.
   assert(pool.consumeBody(13, c));
   assert(pool.view(c, &view) && view.state == RecordState::Running);
   assert(pool.reserve(14, 0, &b) == ReserveResult::ResourceExhausted);
