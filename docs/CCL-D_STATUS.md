@@ -22,21 +22,14 @@
 
 ## 当前已测结果
 
-2026-11-16，双节点 8 rank、五算子、默认 16 slots：
-
-- 20 轮：960/960 条 enqueue 为 `RECORDED`，无 `RESOURCE_EXHAUSTED`；
-- 100 轮：4800/4800 条 enqueue 为 `RECORDED`，无 `RESOURCE_EXHAUSTED`；
-- 100 轮测试中 10,000 条 completion 均来自 CCL-D body 路径，没有 legacy 伪 completion；
-- 通信数据和 monitor 检查通过。
-
-本次 plan 定向收口版本重新编译后，双节点 8 rank AllReduce 100 轮也通过：
+plan 定向收口版本重新编译后，双节点 8 rank 测试结果：
 
 - 构建产物：`ccld-artifacts/reinstall-gfx936-root/lib/librccl.so.1.0`；
-- 800/800 条 enqueue 为 `RECORDED`，无 `RESOURCE_EXHAUSTED`；
-- 12,800 条 completion 与 800 个 rank/TraceID 组合一致；
-- 训练通信数据正确，monitor 退出码为 0。
+- 100 轮 AllReduce：800/800 条 enqueue 为 `RECORDED`；12,800 条 channel completion 对应 800 个 rank/TraceID 组合；monitor 退出码 0；
+- 20 轮 AllGather、ReduceScatter、Broadcast、AllToAll、P2P：默认 16 slots 下 960 条 enqueue 中 865 条 `RECORDED`、95 条 `RESOURCE_EXHAUSTED`；通信校验通过；
+- 同一五算子回归改用 `RCCL_CCLD_SLOTS=64`：960/960 条 enqueue 为 `RECORDED`；4,240 条 completion 对应 880 个 rank/TraceID 组合；monitor 退出码 0。
 
-此前出现的资源耗尽来自两个已修复的实现错误：无 slot 的 work 被合并到前一个诊断 batch，以及旧 collTrace 路径重复输出无 body completion。不能再把旧测试结果当作当前版本结论。
+plan 定向收口代码已构建并运行；五算子回归显示可配置容量能消除该混合负载下的观测丢失，但默认 16 slots 的容量与回收压力仍需验收。旧记录中“20 轮五算子默认容量无耗尽”无法在当前库复现，已移除。已修复的 batch 身份串用与 legacy 伪 completion 是独立问题，不意味着所有资源耗尽均已消除。
 
 ## 尚需验收的内容
 
