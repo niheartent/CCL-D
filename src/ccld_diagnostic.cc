@@ -381,6 +381,10 @@ void rcclCcldRecordDevice(const struct ncclComm* comm,
                           uint64_t send_count, uint64_t recv_count,
                           bool complete) {
   if (!comm || !trace || !enabled()) return;
+  // CCL-D uses the pinned diagnostic body and its completion path. The legacy
+  // collTrace stream has no kernelIndex/TraceID ownership and would emit a
+  // duplicate completion even for RESOURCE_EXHAUSTED work.
+  if (rcclCcldEnabled()) return;
   std::lock_guard<std::mutex> guard(g_lock);
   init(comm);
   if (!g_log) return;

@@ -154,9 +154,10 @@ static void addWorkBatchToPlan(
       }
     }
   }
-  // A device batch currently carries diagnostic identity through its first
-  // work item. Keep CCL-D work isolated so unrelated TraceIDs cannot be merged.
-  if (rcclCcldEnabled() && ccldKernelIndex != UINT32_MAX) newBatch = true;
+  // A device batch carries diagnostic identity through its first work item.
+  // When CCL-D is enabled, isolate every work item: a resource-exhausted work
+  // has no kernelIndex and must never inherit the previous work's TraceID.
+  if (rcclCcldEnabled()) newBatch = true;
   // Conditions causing us to create an extension batch (prev->nextExtends=1)
   uint32_t offset = newBatch ? 0 : (workOffset - batch->offsetBase);
   bool extendBatch = 63*workSize < offset;
