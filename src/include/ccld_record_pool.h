@@ -68,6 +68,7 @@ class RecordPool {
     slot.view.state = RecordState::Reserved;
     slot.channelDone.assign(channels, false);
     slot.channelRegistered.assign(channels, false);
+    slot.bodyChannels.clear();
     slot.expectedPlans = 0;
     slot.completedPlans = 0;
     slot.lastUse = ++clock_;
@@ -103,12 +104,17 @@ class RecordPool {
     return true;
   }
 
-  bool registerBody(uint64_t counter, uint32_t index) {
+  bool registerBody(uint64_t counter, uint32_t index, uint32_t channel) {
     std::lock_guard<std::mutex> lock(mutex_);
     Slot* slot = get(index);
     if (!slot || slot->view.counter != counter ||
         (slot->view.state != RecordState::Running && slot->view.state != RecordState::Reserved)) return false;
-    ++slot->view.expectedBodies;
+    if (channel >= slot->bodyChannels.size())
+      slot->bodyChannels.resize(channel + 1, false);
+    if (!slot->bodyChannels[channel]) {
+      slot->bodyChannels[channel] = true;
+      ++slot->view.expectedBodies;
+    }
     return true;
   }
 
@@ -231,6 +237,7 @@ class RecordPool {
     RecordView view;
     std::vector<bool> channelDone;
     std::vector<bool> channelRegistered;
+    std::vector<bool> bodyChannels;
     uint64_t lastUse = 0;
     uint32_t expectedPlans = 0;
     uint32_t completedPlans = 0;

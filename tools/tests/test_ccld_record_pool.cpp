@@ -44,13 +44,12 @@ int main() {
   // scheduled by the planner has been consumed by the diagnostic thread.
   assert(pool.reserve(13, 0, &c) == ReserveResult::Reserved);
   assert(pool.markRunning(c));
-  assert(pool.registerBody(13, c));
-  assert(pool.registerBody(13, c));
-  assert(pool.registerBody(13, c));
+  assert(pool.registerBody(13, c, 1));
+  assert(pool.registerBody(13, c, 1)); // same channel body across plans
+  assert(pool.registerBody(13, c, 2));
   assert(!pool.consumeBody(12, c));
-  // One completed body can account for one following device batch that was
-  // explicitly marked dropped while the per-channel body was still busy.
-  assert(pool.consumeBody(13, c, 2));
+  // A channel body is consumed once after the operation-level callback.
+  assert(pool.consumeBody(13, c));
   assert(pool.view(c, &view) && view.state == RecordState::Running);
   assert(pool.reserve(14, 0, &b) == ReserveResult::ResourceExhausted);
   assert(pool.consumeBody(13, c));
@@ -65,8 +64,8 @@ int main() {
   assert(p2pPool.reserve(21, 0, &recvIndex) == ReserveResult::Reserved);
   assert(p2pPool.markRunning(sendIndex));
   assert(p2pPool.markRunning(recvIndex));
-  assert(p2pPool.registerBody(20, sendIndex));
-  assert(p2pPool.registerBody(21, recvIndex));
+  assert(p2pPool.registerBody(20, sendIndex, 0));
+  assert(p2pPool.registerBody(21, recvIndex, 0));
   assert(p2pPool.consumeBody(20, sendIndex));
   assert(p2pPool.consumeBody(21, recvIndex));
   assert(p2pPool.reserve(22, 0, &sendIndex) == ReserveResult::Reserved);

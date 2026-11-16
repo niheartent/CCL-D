@@ -418,6 +418,7 @@ private:
     // Always waitSend in case of cleanup
     nelem = nelem < 0 ? 0 : nelem;
     if (SEND) waitSend(divUp(nelem, EltPerLine)*sizeof(ncclLLFifoLine));
+    CCLD_DIAG_SEND(SEND*fan.nsend()*ccldNelem*sizeof(T));
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_PRIM_LL_DATA_PROCESS_ENTRY) && defined(ENABLE_NPKIT_EVENT_PRIM_LL_DATA_PROCESS_EXIT)
     if (tid == 0) {
@@ -507,7 +508,7 @@ private:
         incSend(i, offset);
       incSend(0, offset);
     }
-    CCLD_DIAG_ADD(SEND*fan.nsend()*ccldNelem*sizeof(T), RECV*fan.nrecv()*ccldNelem*sizeof(T));
+    CCLD_DIAG_RECV(RECV*fan.nrecv()*ccldNelem*sizeof(T));
   }
 
   template <int REDUCE, int COPY, int MULTISRCS, int MULTIDSTS>

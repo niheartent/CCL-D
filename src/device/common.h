@@ -42,7 +42,7 @@
   asm volatile ("s_getreg_b32 %0, hwreg(HW_REG_HW_ID)" : "=s" (collTrace->data_0));
 #endif
 #ifdef ENABLE_COLLTRACE
-#define CCLD_DIAG_SLOT_INDEX ((ncclShmem.channelId * CCLD_DIAG_SLOTS) + ncclShmem.ccldDiagSlot)
+#define CCLD_DIAG_SLOT_INDEX ((ncclShmem.channelId * ncclShmem.comm.ccldDiagSlots) + ncclShmem.ccldDiagSlot)
 #define CCLD_DIAG_SLOT_PTR (ncclShmem.comm.ccldDiag + CCLD_DIAG_SLOT_INDEX)
   #define CCLD_DIAG_RESET() do { \
     if (threadIdx.x == 0 && ncclShmem.ccldDiagActive) { \
@@ -116,10 +116,14 @@
       } \
     } \
   } while (0)
+  #define CCLD_DIAG_SEND(SEND) CCLD_DIAG_ADD((SEND), 0)
+  #define CCLD_DIAG_RECV(RECV) CCLD_DIAG_ADD(0, (RECV))
 #else
   #define CCLD_DIAG_RESET()
   #define CCLD_DIAG_SET_PEERS(SENDPEERS, NSEND, RECVPEERS, NRECV)
   #define CCLD_DIAG_ADD(SEND, RECV)
+  #define CCLD_DIAG_SEND(SEND)
+  #define CCLD_DIAG_RECV(RECV)
 #endif
 
 #ifdef ENABLE_COLLTRACE
@@ -641,15 +645,21 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
       }
       ncclShmem.ccldDiagSlot = (int)batchKernelIndex;
       struct ncclCcldDiag* ccld = batchKernelIndex == UINT32_MAX ? nullptr : CCLD_DIAG_SLOT_PTR;
-      ncclShmem.ccldDiagActive = ccld != nullptr && (__atomic_load_n(&ccld->state, __ATOMIC_ACQUIRE) == 0);
+      const uint32_t diagState = ccld ? __atomic_load_n(&ccld->state, __ATOMIC_ACQUIRE) : 0;
+      const bool sameOperation = ccld && ccld->ccldCounter == batchCcldCounter;
+      ncclShmem.ccldDiagActive = ccld != nullptr &&
+          ((diagState == 0) || (diagState == 1 && sameOperation));
       if (ncclShmem.ccldDiagActive) {
-        CCLD_DIAG_RESET();
-        ccld->opCount = batchOpCount; ccld->funcIndex = ncclShmem.funcId;
-        ccld->ccldCounter = batchCcldCounter;
-        ccld->relatedCcldCounter = batchRelatedCcldCounter;
-        ccld->algorithm = batchAlgorithm; ccld->protocol = batchProtocol;
-        ccld->sendCount = 0; ccld->recvCount = 0; ccld->startTimestamp = wall_clock64();
-        __atomic_store_n(&ccld->state, 1u, __ATOMIC_RELEASE);
+        if (diagState == 0) {
+          CCLD_DIAG_RESET();
+          ccld->opCount = batchOpCount; ccld->funcIndex = ncclShmem.funcId;
+          ccld->ccldCounter = batchCcldCounter;
+          ccld->relatedCcldCounter = batchRelatedCcldCounter;
+          ccld->algorithm = batchAlgorithm; ccld->protocol = batchProtocol;
+          ccld->sendCount = 0; ccld->recvCount = 0;
+          ccld->startTimestamp = wall_clock64();
+          __atomic_store_n(&ccld->state, 1u, __ATOMIC_RELEASE);
+        }
       } else if (ccld != nullptr) {
         // The body is already active.  Preserve communication progress and
         // report an observation loss without dereferencing a null slot.
@@ -679,7 +689,7 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
 
     if (tid == 0 && ncclShmem.ccldDiagActive) {
       struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR;
-      ccld->endTimestamp = wall_clock64(); __atomic_store_n(&ccld->state, 2u, __ATOMIC_RELEASE);
+      ccld->endTimestamp = wall_clock64();
     }
     __syncthreads();
     if (ncclShmem.nextBatchIx == -1) break;

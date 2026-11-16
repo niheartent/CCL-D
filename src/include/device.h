@@ -419,7 +419,6 @@ static_assert(sizeof(struct ncclProf) == 256, "ncclProf must have size of 256");
 #endif
 
 #ifdef ENABLE_COLLTRACE
-#define CCLD_DIAG_SLOTS 16
 struct alignas(16) ncclCcldDiag {
 #define CCLD_MAX_PEER_SLOTS NCCL_MAX_ARITY
   uint64_t opCount;
@@ -445,7 +444,7 @@ struct alignas(16) ncclCcldDiag {
   uint64_t recvBytesByProtocolPeer[3][CCLD_MAX_PEER_SLOTS];
   uint64_t startTimestamp;
   uint64_t endTimestamp;
-  uint32_t state; // 0 idle, 1 running, 2 complete
+  uint32_t state; // 0 idle, 1 accumulating, 2 finalized by launch completion callback
   uint16_t channel;
   uint16_t funcIndex;
   uint8_t algorithm;
@@ -558,6 +557,7 @@ struct ncclDevComm {
   struct ncclCollTrace* collTrace;
   union ncclCollTraceTail *collTraceTail;
   struct ncclCcldDiag* ccldDiag;
+  int ccldDiagSlots;
   pthread_t collTraceThread;
 #endif
 

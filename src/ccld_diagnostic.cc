@@ -19,6 +19,7 @@
 #include <vector>
 
 namespace {
+constexpr int kDefaultCcldDiagSlots = 16;
 std::mutex g_lock;
 std::ofstream g_log;
 std::string g_path;
@@ -121,7 +122,8 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
   const char* op = safe(info->opName);
   auto poolIt = g_pools.find(comm);
   if (poolIt == g_pools.end()) {
-    poolIt = g_pools.emplace(comm, std::unique_ptr<rccl_ccld::RecordPool>(new rccl_ccld::RecordPool(CCLD_DIAG_SLOTS))).first;
+    const size_t slots = comm->ccldDiagSlots > 0 ? static_cast<size_t>(comm->ccldDiagSlots) : kDefaultCcldDiagSlots;
+    poolIt = g_pools.emplace(comm, std::unique_ptr<rccl_ccld::RecordPool>(new rccl_ccld::RecordPool(slots))).first;
   }
   const uint64_t counter = poolIt->second->nextCounter();
   info->ccldCounter = counter;
@@ -175,19 +177,31 @@ void rcclCcldEndParent() {
 }
 
 void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
-                          uint64_t relatedCounter) {
+                          uint64_t relatedCounter, uint16_t channel) {
   if (!comm || !enabled() || counter == UINT64_MAX) return;
   std::lock_guard<std::mutex> guard(g_lock);
   auto it = g_pools.find(comm);
   if (it == g_pools.end()) return;
   uint32_t index = UINT32_MAX;
   if (it->second->find(counter, &index)) {
-    it->second->registerBody(counter, index);
+    it->second->registerBody(counter, index, channel);
   }
   if (relatedCounter != UINT64_MAX && relatedCounter != counter) {
     uint32_t relatedIndex = UINT32_MAX;
     if (it->second->find(relatedCounter, &relatedIndex))
-      it->second->registerBody(relatedCounter, relatedIndex);
+      it->second->registerBody(relatedCounter, relatedIndex, channel);
+  }
+}
+
+void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm) {
+  if (!comm || !enabled() || !comm->ccldDiag) return;
+  const int slots = comm->ccldDiagSlots > 0 ? comm->ccldDiagSlots : kDefaultCcldDiagSlots;
+  for (int channel = 0; channel < MAXCHANNELS; ++channel) {
+    for (int slot = 0; slot < slots; ++slot) {
+      struct ncclCcldDiag* diag = comm->ccldDiag + channel * slots + slot;
+      if (__atomic_load_n(&diag->state, __ATOMIC_ACQUIRE) == 1)
+        __atomic_store_n(&diag->state, 2u, __ATOMIC_RELEASE);
+    }
   }
 }
 
@@ -207,11 +221,11 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
     if (poolIt != g_pools.end()) {
       uint32_t index = UINT32_MAX;
       if (poolIt->second->find(diag->ccldCounter, &index))
-        poolIt->second->consumeBody(diag->ccldCounter, index, 1 + diag->droppedBatches);
+        poolIt->second->consumeBody(diag->ccldCounter, index);
       if (diag->relatedCcldCounter != UINT64_MAX) {
         uint32_t relatedIndex = UINT32_MAX;
         if (poolIt->second->find(diag->relatedCcldCounter, &relatedIndex))
-          poolIt->second->consumeBody(diag->relatedCcldCounter, relatedIndex, 1 + diag->droppedBatches);
+          poolIt->second->consumeBody(diag->relatedCcldCounter, relatedIndex);
       }
     }
     return;
@@ -310,11 +324,11 @@ void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
   if (poolIt != g_pools.end()) {
     uint32_t index = UINT32_MAX;
     if (poolIt->second->find(diag->ccldCounter, &index))
-      poolIt->second->consumeBody(diag->ccldCounter, index, 1 + diag->droppedBatches);
+      poolIt->second->consumeBody(diag->ccldCounter, index);
     if (diag->relatedCcldCounter != UINT64_MAX) {
       uint32_t relatedIndex = UINT32_MAX;
       if (poolIt->second->find(diag->relatedCcldCounter, &relatedIndex))
-        poolIt->second->consumeBody(diag->relatedCcldCounter, relatedIndex, 1 + diag->droppedBatches);
+        poolIt->second->consumeBody(diag->relatedCcldCounter, relatedIndex);
     }
   }
 }

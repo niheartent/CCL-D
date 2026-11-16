@@ -20,7 +20,7 @@
 ```bash
 cd /workspace/CCL-D
 source /opt/dtk-26.04/env.sh
-export RCCL_PREFIX=$PWD/ccld-artifacts/sample-probe-install
+export RCCL_PREFIX=$PWD/ccld-artifacts/antccl-coordinated-gfx936
 export LD_LIBRARY_PATH=$RCCL_PREFIX/lib:/opt/hyhal/lib:/opt/dtk/lib:/opt/dtk/hip/lib:/opt/mpi/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 ```
 
@@ -36,7 +36,7 @@ cmake --install ccld-artifacts/my-build
 
 ## 运行双节点多算子回归
 
-覆盖 AllGather、ReduceScatter、Broadcast、AllToAll 和 P2P；每轮校验通信数据并保存 rank 日志。
+覆盖 AllGather、ReduceScatter、Broadcast、AllToAll 和 P2P；每轮校验通信数据并保存 rank 日志。`RCCL_CCLD_SLOTS` 控制每个 channel 的 LRU 诊断 body 数量，默认 16，可在运行前调整，无需重新编译；所有 rank 必须使用相同值。容量增加 pinned host memory 使用量，资源耗尽仍应按设计显式丢失诊断记录且通信继续。
 
 ```bash
 tools/tests/build_multinode_collective_slot_regression.sh

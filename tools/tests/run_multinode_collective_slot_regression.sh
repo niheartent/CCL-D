@@ -10,8 +10,8 @@ COUNT=${CCLD_COUNT:-4096}
 mkdir -p "$OUT"
 test -x "$EXE"
 export LD_LIBRARY_PATH="$RCCL_PREFIX/lib:$UCX_PREFIX/lib:/opt/hyhal/lib:/opt/dtk/lib:/opt/dtk/hip/lib:/opt/mpi/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export RCCL_CCLD_ENABLE=1 RCCL_CCLD_LOG="$OUT/rank-{rank}.jsonl"
-OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 mpirun --mca plm_rsh_args "-p 2234" --host "${CCLD_HOSTS:-HPDPS-6:4,HPDPS-7:4}" --map-by ppr:4:node --bind-to none -np "${CCLD_NP:-8}" -x LD_LIBRARY_PATH -x RCCL_CCLD_ENABLE -x RCCL_CCLD_LOG "$EXE" "$ITERS" "$COUNT" | tee "$OUT/run.log"
+export RCCL_CCLD_ENABLE=1 RCCL_CCLD_SLOTS=${RCCL_CCLD_SLOTS:-16} RCCL_CCLD_LOG="$OUT/rank-{rank}.jsonl"
+OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 mpirun --mca plm_rsh_args "-p 2234" --host "${CCLD_HOSTS:-HPDPS-6:4,HPDPS-7:4}" --map-by ppr:4:node --bind-to none -np "${CCLD_NP:-8}" -x LD_LIBRARY_PATH -x RCCL_CCLD_ENABLE -x RCCL_CCLD_SLOTS -x RCCL_CCLD_LOG "$EXE" "$ITERS" "$COUNT" | tee "$OUT/run.log"
 python3 "$ROOT/tools/ccld_monitor.py" --once --all --slow-rate-ratio "${CCLD_SLOW_RATE_RATIO:-0}" "$OUT"/rank-*.jsonl | tee "$OUT/monitor.jsonl"
 python3 - "$OUT"/rank-*.jsonl <<'PY'
 import json, sys

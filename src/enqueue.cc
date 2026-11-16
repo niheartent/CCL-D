@@ -186,7 +186,7 @@ static void addWorkBatchToPlan(
   }
   batch->offsetBitset |= 1ull<<(offset/workSize);
   if (rcclCcldEnabled() && ccldKernelIndex != UINT32_MAX)
-    rcclCcldRegisterBody(comm, ccldCounter, relatedCcldCounter);
+    rcclCcldRegisterBody(comm, ccldCounter, relatedCcldCounter, channelId);
   chan->wipBatch.workBytes += workSize;
   if (workType == ncclDevWorkTypeP2p) {
     // We need to ensure that a single batch doesn't have multiple p2p's
@@ -1398,6 +1398,10 @@ static ncclResult_t reclaimPlan(struct ncclComm* comm, struct ncclCommCallback* 
   return ncclSuccess;
 }
 
+static void HIPRT_CB ccldFinalizeCallback(void* comm_) {
+  rcclCcldFinalizeDiagnostics((struct ncclComm*)comm_);
+}
+
 static void persistentDestructor(void* plans_) {
   struct ncclKernelPlan* plan = (struct ncclKernelPlan*)plans_;
   struct ncclComm* comm = plan->comm;
@@ -1657,6 +1661,23 @@ ncclResult_t ncclLaunchFinish(struct ncclComm* comm) {
     // Release device stream as acquired in ncclLaunchPrepare()
     NCCLCHECKGOTO(ncclStrongStreamRelease(planner->capturingGraph, &comm->sharedRes->deviceStream), result, resume3);
   resume3:;
+    if (rcclCcldEnabled()) {
+      // The callback is ordered after every plan in this planner flush. Keep
+      // each channel body accumulating until this operation-level boundary.
+      result = ncclStrongStreamAcquire(planner->capturingGraph, &comm->sharedRes->hostStream);
+      if (result == ncclSuccess) {
+        result = ncclStrongStreamWaitStream(planner->capturingGraph,
+                                            &comm->sharedRes->hostStream,
+                                            launchStream);
+        if (result == ncclSuccess)
+          result = ncclStrongStreamLaunchHost(planner->capturingGraph,
+                                              &comm->sharedRes->hostStream,
+                                              ccldFinalizeCallback, comm);
+        ncclResult_t releaseResult = ncclStrongStreamRelease(
+            planner->capturingGraph, &comm->sharedRes->hostStream);
+        if (result == ncclSuccess) result = releaseResult;
+      }
+    }
   }
   return result;
 }

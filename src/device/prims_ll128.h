@@ -348,6 +348,7 @@ private:
     nelem = nelem < 0 ? 0 : nelem;
 
     if (SEND) waitSend(divUp(nelem, DataEltPerSlice)*WireWordPerSlice*sizeof(uint64_t));
+    CCLD_DIAG_SEND(SEND*fan.nsend()*ccldNelem*sizeof(T));
     barrier();
     nelem -= DataEltPerSlice*warp;
     srcPtr += DataEltPerSlice*warp;
@@ -370,7 +371,7 @@ private:
     if (SEND) postSend();
     if (RECV) for (int i=0; i < MaxRecv; i++) recvStep[i] += 1;
     if (RECV) postRecv();
-    CCLD_DIAG_ADD(SEND*fan.nsend()*ccldNelem*sizeof(T), RECV*fan.nrecv()*ccldNelem*sizeof(T));
+    CCLD_DIAG_RECV(RECV*fan.nrecv()*ccldNelem*sizeof(T));
   }
 
   template <int REDUCE, int COPY, int MULTISRCS, int MULTIDSTS>

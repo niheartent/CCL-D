@@ -36,6 +36,7 @@
 #include <sys/stat.h>
 #include <algorithm>
 #include <chrono>
+#include <vector>
 #include <unistd.h>
 #include "graph/topo.h"
 #include "graph/xml.h"
@@ -236,15 +237,17 @@ void NCCL_NO_OPTIMIZE commPoison(ncclComm_t comm) {
 RCCL_PARAM(KernelCollTraceEnable, "KERNEL_COLL_TRACE_ENABLE", 0);
 RCCL_PARAM(KernelCollTraceThreadEnable, "KERNEL_COLL_TRACE_THREAD_ENABLE", 0);
 RCCL_PARAM(KernelCollTraceSampleMs, "CCLD_SAMPLE_MS", 10);
+RCCL_PARAM(CcldDiagSlots, "CCLD_SLOTS", 16);
 
 #ifdef ENABLE_COLLTRACE
 // Should be in sync with 'ALL_COLLS' in Generator.cmake
 void *ncclCommThreadMain(void *arg) {
   ncclComm_t comm = (ncclComm_t)arg;
   int head[MAXCHANNELS];
-  uint64_t lastCcldSampleNs[MAXCHANNELS * CCLD_DIAG_SLOTS] = {};
-  uint64_t lastCcldSend[MAXCHANNELS * CCLD_DIAG_SLOTS] = {};
-  uint64_t lastCcldRecv[MAXCHANNELS * CCLD_DIAG_SLOTS] = {};
+  const int ccldSlots = comm->ccldDiagSlots > 0 ? comm->ccldDiagSlots : 1;
+  std::vector<uint64_t> lastCcldSampleNs(MAXCHANNELS * ccldSlots, 0);
+  std::vector<uint64_t> lastCcldSend(MAXCHANNELS * ccldSlots, 0);
+  std::vector<uint64_t> lastCcldRecv(MAXCHANNELS * ccldSlots, 0);
   const uint64_t sampleIntervalNs = static_cast<uint64_t>(
       std::min<int64_t>(60000, std::max<int64_t>(1, rcclParamKernelCollTraceSampleMs()))) * 1000000ULL;
   double vega_gpu_rtc_freq;
@@ -262,8 +265,8 @@ void *ncclCommThreadMain(void *arg) {
       const uint64_t sampleNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
       for (int channel = 0; channel < MAXCHANNELS; channel++) {
-        for (int slot = 0; slot < CCLD_DIAG_SLOTS; slot++) {
-        const int diagIndex = channel * CCLD_DIAG_SLOTS + slot;
+        for (int slot = 0; slot < ccldSlots; slot++) {
+        const int diagIndex = channel * ccldSlots + slot;
         volatile struct ncclCcldDiag* diag = comm->ccldDiag + diagIndex;
         const uint32_t state = __atomic_load_n(&diag->state, __ATOMIC_ACQUIRE);
         if (state == 1) {
@@ -323,11 +326,12 @@ void *ncclCommThreadMain(void *arg) {
           for (int i = 0; i < 3; ++i)
             snapshot.treeDown[i] = __atomic_load_n(&diag->treeDown[i], __ATOMIC_RELAXED);
           snapshot.treeDepth = __atomic_load_n(&diag->treeDepth, __ATOMIC_RELAXED);
-          rcclCcldRecordDeviceDiag(comm, &snapshot);
+          // Release the device-visible body before freeing its LRU index.
           __atomic_store_n(&diag->state, 0u, __ATOMIC_RELEASE);
           lastCcldSampleNs[diagIndex] = 0;
           lastCcldSend[diagIndex] = 0;
           lastCcldRecv[diagIndex] = 0;
+          rcclCcldRecordDeviceDiag(comm, &snapshot);
         }
         }
       }
@@ -698,7 +702,12 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
 #ifdef ENABLE_COLLTRACE
   NCCLCHECK(ncclCudaCalloc(&comm->collTraceTail, MAXCHANNELS));
   NCCLCHECK(ncclCudaCalloc(&comm->collTrace, COLLTRACE_NUM_ITEMS*MAXCHANNELS));
-  NCCLCHECK(ncclCudaHostCalloc(&comm->ccldDiag, MAXCHANNELS * CCLD_DIAG_SLOTS));
+  int ccldSlots = rcclParamCcldDiagSlots();
+  if (ccldSlots < 1) ccldSlots = 1;
+  // The value is runtime-configurable; allocation failure follows RCCL's
+  // normal initialization error path.
+  comm->ccldDiagSlots = ccldSlots;
+  NCCLCHECK(ncclCudaHostCalloc(&comm->ccldDiag, MAXCHANNELS * comm->ccldDiagSlots));
   ncclCommPushCudaHostFree(comm, comm->ccldDiag);
   comm->collTraceExit = 0;
   comm->collTraceEnabled = false; // we can enable colltrace without starting a thread
@@ -853,6 +862,7 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   tmpCommAndChans.comm.collTrace = comm->collTrace;
   tmpCommAndChans.comm.collTraceTail = comm->collTraceTail;
   tmpCommAndChans.comm.ccldDiag = comm->ccldDiag;
+  tmpCommAndChans.comm.ccldDiagSlots = comm->ccldDiagSlots;
   tmpCommAndChans.comm.collTraceThread = comm->collTraceThread;
 #endif
 

@@ -19,7 +19,7 @@
 | 项目 | 当前状态 | 验收缺口 |
 |---|---|---|
 | 操作级 TraceID 与 `kernelIndex` | host 已分配并传入 collective/P2P work | 跨多个 plan/work/channel 的唯一归属尚未证明 |
-| pinned body 与 slot 回收 | planner 登记 body，诊断线程消费后释放 | callback 缺失、销毁清理和长轮次容量尚未验收 |
+| pinned body 与 slot 回收 | 容量已支持运行时配置 `RCCL_CCLD_SLOTS`，诊断线程消费后释放 | 默认 16-slot 在 20 轮测试出现资源耗尽；较大容量通过有限轮次，真实生命周期闭环仍未验收 |
 | AllToAll 父操作 | 已接入单轮路径 | 多 plan、长轮次仍需验证 |
 | Ring/Tree 分析 | Ring 基础规则已验收，Tree 有规则 | 真实 Tree 多节点长期回归未完成 |
 
@@ -39,4 +39,4 @@
 
 ## 当前证据边界
 
-最近双节点 5 轮回放为 65 条 `OK`、5 条 `P2P_DEVICE_EVIDENCE`、5 条 `TOPOLOGY_PENDING`，无 Ring/Tree 结构告警。该结果证明当前样本没有立即退化，不证明材料级生命周期和协议计数已经完成。
+2026-11-16 双节点 8-rank 五算子回归：`RCCL_CCLD_SLOTS=64`、20 轮时 960/960 enqueue 成功；默认 16、20 轮时 98 条 `RESOURCE_EXHAUSTED`；128 slots、100 轮时 4800/4800 enqueue 成功，50,000 条 channel completion。数据通信正确且 monitor 退出码为 0。大容量只验证运行时参数和该轮数下的容量，不代表生命周期回收已符合 AntCCL；需要查明 callback 收口及 LRU 复用为何没有及时释放。
