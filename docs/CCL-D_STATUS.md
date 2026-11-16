@@ -1,38 +1,25 @@
-# CCL-D 项目评估
+# CCL-D 实现评估
 
-本页区分材料要求和本仓库已有证据。没有可追溯代码或运行产物支撑的内容不记为完成。材料本身是脱敏稿，决策树细节和部分评测内容不完整，复现边界受此限制。
+本项目以脱敏参考材料中的数据链路为实现依据。图示明确了四个层次：通信域提供 rank/channel/path 信息，操作层提供 collective、算法和协议，pinned memory 保存按 channel 的 send/recv body，diagnose thread 周期读取并由 kernel hostcallback 通知完成；分析器再按 Ring 全 rank、Tree 同层 rank 比较。
 
-## 对照结论
+## 当前代码
 
-| 材料环节 | 当前代码/证据 | 评估 |
+| 项目 | 现状 | 结论 |
 |---|---|---|
-| TraceID 及通信元数据 | host enqueue 分配 counter；记录操作、算法/协议等字段 | 路径已接通；身份语义需用真实 rank 记录核对 |
-| pinned-memory、channel send/recv 计数 | RCCL 初始化诊断区；device Simple/LL/LL128 插桩；host 线程采样和快照 | 采集实现存在；各协议计数值及 mode 语义尚未完成数值验收 |
-| kernel 结束通知与操作级结果 | RCCL flush callback、诊断记录和 JSONL 输出 | 已实现项目版本；多 plan 边界和结果完整性尚需针对性核对，材料没有规定具体聚合算法 |
-| Ring 比较 | Python analyzer 有 rank 间比较代码及测试 | 基础规则存在；真实拓扑/负载下的定位效果未证明 |
-| Tree 同层比较 | analyzer 有基于拓扑字段的分组逻辑 | 代码路径存在；真实 Tree 运行及同层诊断未验收 |
-| slow/hang 判定 | analyzer 已按图示输出未进入、非 hang rank、全体停滞和 rate 证据路径 | 合成输入可验证分支；真实 slow/hang 端到端检测、基线和误报/漏报仍未验收 |
+| TraceID | host counter 与 commHash 组合为记录身份 | 基础身份可用；图示 44-byte 扩展位尚未落地，不能称为完整布局 |
+| pinned body | 按 channel/slot 保存 sendCount、recvCount，host 线程采样和完成快照 | 采集路径存在，协议数值尚未逐协议验收 |
+| 生命周期 | RCCL communicator 绑定诊断线程；kernel 完成后回调；RecordPool 只保留 body 注册/消费 | 已去掉未接生产调用的 plan/channel 状态机；容量策略仍是工程行为 |
+| Ring/Tree | JSONL 输出 ring 邻居、tree 层级，analyzer 有基础比较 | 真实拓扑诊断尚未验收 |
+| slow/hang | 有参数/缺 rank/完成/速率规则及合成输入测试 | 尚未证明图片所示决策链在真实通信中正确定位根因 |
 
-## 已有运行证据
+## 明确删除的错误扩展
 
-仓库历史记录报告 gfx936 RCCL 独立构建成功，以及 HPDPS-6/7 双节点 8 rank 通信回归：AllReduce 100 轮和五类算子混合回归曾通过数据校验；容量参数对照中，16 slots 发生记录资源不足、64 slots 未发生。该证据说明通信与采集路径能够运行，也说明当前容量选择会影响观测完整性。它不证明材料规定了该容量或耗尽策略，也不证明诊断算法识别了实际 slow/hang。
+不再把固定 slot 数、资源耗尽行为、跨 plan 收口算法、AllToAll 父子关联、peer 字节分摊和故障注入当作材料要求。它们只有在有实际诊断收益且不影响通信时才作为独立扩展；当前不继续扩大。
 
-这些数字来自先前测试记录；在本次评估中没有重新运行测试，也没有逐个重放原始产物。后续引用具体数值时，应同时保存并链接原始日志、启动命令、RCCL 安装前缀及 commit，否则只作为历史报告，不作为当前验收结论。
+## 重做优先级
 
-## 工程自定义，不能冒称材料设计
+1. 先补齐 header/body 的真实字段映射：`kernelIndex`、`mode`、`counter`、`detectChannel`、TraceID 扩展位，并确认 device/host 对同一 body 的读写顺序。
+2. 再按图示实现 slow/hang 最小决策：未进入、部分 rank 未完成、全体停滞三类；输入只使用已有 host/kernel 状态、开始结束时间和 send/recv rate。
+3. 最后做 Simple、LL、LL128 数值核对和 Ring/Tree 双节点实验。
 
-- `RCCL_CCLD_SLOTS` 及池满返回 `RESOURCE_EXHAUSTED`：本项目容量/降级行为。材料没有定义 slot 或满池语义。
-- plan counter 集合及 callback 定向 finalize：本项目生命周期实现。材料只说明 kernel host callback 通知诊断线程，没有描述该聚合算法。
-- AllToAll 父子 TraceID、P2P 关联、peer 字节分桶、额外协议字段、故障注入：本项目扩展字段或工具，不是材料明确要求。
-- `RCCL_CCLD_SAMPLE_US` 默认值与模式参数实现：本项目可配置实现。材料采样周期描述存在精度差异，不能以默认值宣称复刻其精度。
-
-对这些工程项只保留能支撑稳定采集和明确诊断输出的部分。若没有诊断收益或证据，不继续扩大状态机、身份层级或测试矩阵。
-
-## 接下来需要证明的核心能力
-
-1. 对已接通的 Simple、LL、LL128 插桩分别做已知规模的 send/recv 计数核对，确认 channel 和 mode 结果。
-2. 用真实 Ring 与 Tree 通信验证材料明确的比较维度：Ring 跨 rank、Tree 同层；输出可复核的输入指标和判定结果。
-3. 用可控的通信变慢/停滞场景验证图示决策链：未进入、部分 rank 停滞、全 rank 停滞分别检查根因 rank 和依据，并报告检测延迟、误报/漏报和通信正确性。合成 JSON 输入只能作为规则单测。
-4. 做无诊断/启用诊断对照，报告吞吐、延迟、CPU 和 pinned-memory 开销。
-
-验收方法见 [测试计划](CCL-D_TEST_PLAN.md)。不把 graph、CollNet、NVLS、MSCCL、通信自愈或未经材料支持的完整生命周期模型列为当前复现完成条件。
+当前没有有效的新编译产物；旧构建目录已清理。下一次编译应在上述字段映射和决策实现完成后集中进行。

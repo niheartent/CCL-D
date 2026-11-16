@@ -1,21 +1,37 @@
-# CCL-D 复现依据
+# CCL-D 复现规格与代码差距
 
-本文以仓库内脱敏参考材料为依据，只把材料明确写出的内容称为“材料设计”。材料没有定义的实现选择单独标为“本项目实现”或“未确定”，不据此反推材料原文。
+实现以 `/workspace/CCL-D/paper/【脱敏版】AntCCL_ A High-Precision Diagnostic System for Collective Communication.docx` 的文字和图片为依据。文字未定义的字段不擅自赋予语义；先按图保留空间并置零。
 
-## 材料明确的诊断链路
+## 图片给出的设计
 
-材料目标是从集合通信中发现并定位 slow/hang。每条记录关联通信域和操作身份，材料给出的 TraceID 形式为 `commId + counter + 扩展位`。RCCL 在 pinned memory 中维护诊断 buffer：header 包含 `kernelIndex`、`mode`、`counter`、`detectChannel`、`traceid`；body 按 channel 保存 send/recv 计数。
+| 图示 | 设计约束 |
+|---|---|
+| 增强架构图 | 通信域层提供 rank、channel、path type；操作层区分算子、Ring/Tree 算法、Simple/LL/LL128 协议；传输层包含 channel 与 P2P 路径。TOPO、TraceID、Kernel Diagnose 和 Diagnose Metrics 进入 slow/hang Decision Analyzer。 |
+| TraceID 布局图 | 固定 60 bytes：8-byte commId、8-byte counter、44-byte extension。 |
+| pinned buffer 图 | Header 保存 kernelIndex(KID)、mode、counter、detectChannel、traceid；每个 KID 的 body 按 channel 保存 sendCount/recvCount。 |
+| 线程/事件图 | diagnose thread 从 pinned memory 读取；kernel 通过 DMA 更新；kernel 完成后触发 hostcallback，由 callback 通知 diagnose thread 更新读取位置；communicator destroy 时 join diagnose thread。 |
+| diagnose thread 流程图 | 外循环跟踪通信域和 TraceID；操作期间循环计算收发速率、检查 TraceID 变化、通信域停滞和 hang 超时，再输出集合通信统计。 |
+| slow 决策图 | trace 耗时超过基线后，结合 rank 粒度 trace 步调及 sendRate/recvRate 判断；步调差异明显时定位慢操作 rank，步调相近时定位速率最低 rank，混合情况联合给出候选。 |
+| hang 决策图 | 先找未进入集合通信的 rank；若都进入，检查是否有非 hang rank；若全部 hang，结合算法拓扑及对比位置的收发次数定位候选 rank。 |
+| case 图 | 至少区分正常、单 rank 未进入、集合通信规模不一致、单 rank 设备/驱动错误导致 hang。 |
 
-device 侧按协议记录通信计数：Simple 的 send/recv 计数点均在 generic operation 末尾；LL/LL128 的 send 计数点在 waitSend 之后，recv 计数点在 generic operation 末尾。诊断线程周期性读取 buffer 并计算 sendRate/recvRate；kernel host callback 在 kernel 结束时通知诊断线程，输出操作级结果。材料描述 mode 0 为关闭、mode 1 为每 channel 的 tid0 计数、mode 2 为每 channel 所有 tid 原子计数。通信域创建/销毁与诊断线程资源绑定。
+文字还描述 mode 0/1/2：关闭、每 channel tid0 统计、每 channel 所有 tid 原子统计。Simple send/recv 插在 generic operation 末尾；LL/LL128 send 在 waitSend 后、recv 在 generic operation 末尾。Ring 跨 rank 比较，Tree 同层比较。
 
-图示还明确了三层观测关系：通信域提供 rank/channel/path 信息，操作层区分 collective、Ring/Tree 和 Simple/LL/LL128，传输层对应 channel 及 P2P 链路；TraceID、TOPO 和 kernel diagnose 汇入 host/kernel status，再交给 slow/hang decision analyzer。Ring 在同一轮次比较各 rank；Tree 比较同一层 rank。slow 流程先判断 trace 通信耗时是否超过基线，再用 rank 粒度 trace 的步调和 sendRate/recvRate 缩小根因；hang 流程先判断是否有 rank 未进入，其次区分已进入但未 hang 的 rank，最后在全体停滞时比较收发计数。材料对采样精度有 200 微秒和 1 毫秒两处描述，因此本项目不据此声称唯一精度值。
+## 当前实现与差距
 
-## 本仓库实现状态
+| 环节 | 当前代码 | 差距 |
+|---|---|---|
+| TraceID/Header | counter 由 host 分配，日志以 commHash:counter 表示；device struct 单独保存 counter/slot/channel 等字段 | 不是图示 60-byte TraceID；header 缺少统一布局和 44-byte extension 区，kernelIndex/mode/detectChannel 分散在别处 |
+| Body | pinned array 按 channel 和 slot 分区，保存收发计数及额外 peer/protocol 字段 | 有材料要求的 send/recv 计数，但结构混入不少扩展；需要明确 KID 与 channel body 的固定映射 |
+| 事件生命周期 | communicator 内诊断线程轮询状态；flush callback 将 device body 标为完成；销毁时 join 线程 | 与图示事件方向基本对应，但没有显式 read memory index，需验证状态通知不会丢完成或复用中的 body |
+| 速率/状态 | 线程采样计数；complete JSON 携带时间与计数 | 当前采样/输出需核对是否覆盖图示 TraceID 变化、通信域停滞、hang 超时和操作基线 |
+| 决策树 | analyzer 存在缺 rank、未完成和 rate outlier 规则 | 现规则不是图示分支：slow 需使用 trace 耗时、步调和双向 rate；hang 需区分未进入、部分 hang、全 hang，并用同算法/拓扑位置的收发次数；不得用全局最小计数替代拓扑位置比较 |
+| 拓扑 | 输出 Ring 邻居及 Tree parent/children/depth，analyzer 有基础对称性检查 | 真实 Ring 全 rank 和 Tree 同层定位尚未验收；拓扑位置与 hang 计数候选尚未连接 |
 
-代码已经具备 RCCL host/device 记录路径、Simple/LL/LL128 计数插点、按 channel 的 pinned-memory 诊断区、诊断线程采样/完成快照，以及 JSONL 输出和 Python 分析器。analyzer 已输出 host/kernel 状态和图示决策路径的证据字段；这仍不等于真实 slow/hang 场景的端到端验收。协议计数数值与材料语义仍需逐协议核对。
+已删除未接生产调用的 RecordPool plan/channel 状态机。容量耗尽策略、AllToAll 父子关联、peer 字节估算和合成故障接口不是图示必要字段，当前不继续扩展。
 
-历史双节点回归曾验证 AllReduce 与 AllGather、ReduceScatter、Broadcast、AllToAll、P2P 的通信数据正确性及记录输出。具体环境、提交和原始结果应以 [状态记录](CCL-D_STATUS.md) 指向的实际产物为准；这些回归不等于 slow/hang 定位能力已被证明。
+## 最高效的实施方式
 
-## 材料未规定的内容
+不重写整个 RCCL。先做一次结构设计评审并冻结 host/device ABI：60-byte TraceID 作为逻辑字段，44-byte extension 全零保留；header/body 使用 KID 与 channel 的直接索引；删除 device body 中与核心诊断无关的 peer byte 矩阵和重复协议统计。再把 callback 通知路径缩成一个明确完成标记/读取索引，保证诊断线程复制快照后才释放 body。Python analyzer 改为严格实现图示 slow/hang 分支，并用每个分支的最小合成案例单测。以上 RCCL 改动一次合并后再做一次 gfx936 编译和双节点验收。
 
-材料没有规定 slot 数量及耗尽时的行为、RecordPool 回收算法、多 plan/work 聚合方法、AllToAll 父子身份、peer 字节分摊、故障注入接口，或完整的 slow/hang 决策规则。它们如继续保留，均属于本项目工程实现或扩展，必须有独立代码与实验依据，不得作为复现材料要求。当前状态与最小验证目标见 [CCL-D_STATUS.md](CCL-D_STATUS.md) 和 [CCL-D_TEST_PLAN.md](CCL-D_TEST_PLAN.md)。
+估算：结构与生命周期梳理约 1 个开发日；analyzer 决策树和单测约 0.5–1 日；RCCL 编译链接约 30–60 分钟；协议、Ring/Tree、slow/hang 双节点验证约 0.5–1 日。若实际 44-byte 扩展字段在原始材料中另有定义，应先按该定义替换零保留方案，不猜测字段语义。

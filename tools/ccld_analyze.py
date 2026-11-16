@@ -167,53 +167,10 @@ def analyze(records, *, now_ns=None, timeout_ms=2000, slow_skew_ms=2):
                         "nnodes": nnodes, "skew_ms": round(skew_ms, 3),
                         "age_ms": round(age_ms, 1),
                         "records": len(rows), "p2p": bool(p2p_rows)}
-        result["hang_diagnosis"] = ({"status": "HANG_RANK_NOT_ENTERED",
-                                     "root_ranks": list(missing)}
-                                    if status == "MISSING_RANK" else None)
         result.update(_root_cause(status, ranks=ranks, missing_ranks=missing,
                                   mismatches=mismatches))
         results.append(result)
     return results
-
-
-def _reference_diagnosis(by_rank, expected_ranks, missing, incomplete, slow_ranks):
-    """Apply the compact decision paths shown in the reference diagrams.
-
-    The diagrams distinguish a rank that never entered the collective from a
-    rank that entered but did not finish.  For slow operations they first use
-    operation duration, then the per-rank send/recv rates.  This helper only
-    labels evidence already present in the records; it never fabricates a
-    device or transport fault.
-    """
-    hang = None
-    if missing:
-        hang = {"status": "HANG_RANK_NOT_ENTERED", "root_ranks": list(missing)}
-    elif incomplete:
-        finished = sorted(rank for rank, value in by_rank.items() if value["complete"])
-        if finished:
-            hang = {"status": "HANG_NON_HANG_RANK", "root_ranks": finished,
-                    "hanging_ranks": list(incomplete)}
-        else:
-            candidates = [
-                (value["send_count"] + value["recv_count"], rank)
-                for rank, value in by_rank.items() if rank in incomplete
-            ]
-            roots = [min(candidates)[1]] if candidates else list(incomplete)
-            hang = {"status": "HANG_ALL_RANKS", "root_ranks": roots,
-                    "hanging_ranks": list(incomplete)}
-
-    slow = None
-    durations = [(value["duration"], rank) for rank, value in by_rank.items()
-                 if value.get("duration") is not None and value["duration"] > 0]
-    if slow_ranks:
-        if durations:
-            fastest = min(durations)[1]
-            slow = {"status": "SLOW_COMMUNICATION", "root_ranks": list(slow_ranks),
-                    "fastest_rank": fastest, "basis": "sendRate/recvRate"}
-        else:
-            slow = {"status": "SLOW_COMMUNICATION", "root_ranks": list(slow_ranks),
-                    "basis": "sendRate/recvRate"}
-    return slow, hang
 
 def analyze_operation_semantics(records):
     """Apply operation-specific contracts to enqueue and completion evidence.
@@ -423,7 +380,6 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
         nnodes = max((int(row.get("nnodes", 1)) for row in rows), default=1)
         ranks = sorted(by_rank)
         missing = sorted(set(range(expected)) - set(ranks))
-        expected_ranks = list(range(expected))
         send_values = sorted({v["send_count"] for v in by_rank.values()})
         recv_values = sorted({v["recv_count"] for v in by_rank.values()})
         algorithms = sorted({int(row.get("algorithm", -1)) for row in rows})
@@ -567,8 +523,6 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
             baseline = sorted(usable_rates)[len(usable_rates) // 2]
             slow_ranks = sorted(rank for rank, value in by_rank.items()
                                 if value["send_rate"] < baseline * slow_rate_ratio)
-        slow_diagnosis, hang_diagnosis = _reference_diagnosis(
-            by_rank, expected_ranks, missing, incomplete, slow_ranks)
         topology_fault = topology_analysis["status"] in ("RING_ASYMMETRY", "TREE_ASYMMETRY")
         dropped = sorted(rank for rank, value in by_rank.items() if value["dropped_batches"] > 0)
         status = "DIAGNOSTIC_BATCH_DROPPED" if dropped else (
@@ -614,8 +568,6 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                         "peer_data_inconsistent_ranks": sorted(set(peer_inconsistent)),
                         "peer_data_inconsistent_channels": peer_inconsistent_channels,
                         "diagnostic_dropped_ranks": dropped,
-                        "slow_diagnosis": slow_diagnosis,
-                        "hang_diagnosis": hang_diagnosis,
                         "op_counts": op_counts,
                         "topology_edges": topology_edges,
                         "topology_groups": topology_groups,
@@ -630,10 +582,6 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                                   per_rank=by_rank, send_counts=send_values,
                                   recv_counts=recv_values,
                                   peer_data_truncated_ranks=result["peer_data_truncated_ranks"]))
-        if slow_diagnosis:
-            result["evidence"]["slow_diagnosis"] = slow_diagnosis
-        if hang_diagnosis:
-            result["evidence"]["hang_diagnosis"] = hang_diagnosis
         results.append(result)
     return results
 

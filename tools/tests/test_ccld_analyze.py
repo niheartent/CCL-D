@@ -265,8 +265,6 @@ class CcldAnalyzeTest(unittest.TestCase):
         result = analyze_completions(rows)[0]
         self.assertEqual(result["status"], "MISSING_COMPLETION")
         self.assertEqual(result["incomplete_ranks"], [1])
-        self.assertEqual(result["hang_diagnosis"]["status"], "HANG_NON_HANG_RANK")
-        self.assertEqual(result["hang_diagnosis"]["root_ranks"], [0])
 
     def test_completion_rate_outlier_is_detected(self):
         rows = []
@@ -281,8 +279,6 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertAlmostEqual(result["per_rank"][2]["send_rate"], 2.5)
         self.assertEqual(result["root_cause"], "COMMUNICATION_PROGRESS_SLOW")
         self.assertEqual(result["first_error_rank"], 2)
-        self.assertEqual(result["slow_diagnosis"]["status"], "SLOW_COMMUNICATION")
-        self.assertEqual(result["slow_diagnosis"]["root_ranks"], [2])
         self.assertIn("rates", result["evidence"])
 
     def test_completion_keeps_peer_topology_edges(self):
