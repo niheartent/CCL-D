@@ -6,7 +6,7 @@
 
 | 项目 | 现状 | 结论 |
 |---|---|---|
-| TraceID | host counter 与 commHash 组合为记录身份 | 基础身份可用；图示 44-byte 扩展位尚未落地，不能称为完整布局 |
+| TraceID | 新 `ccld_data.h` 定义 60-byte 布局：8-byte commId、8-byte counter、44-byte reserved extension | 单测已验证字段宽度；尚未接入生产记录路径 |
 | pinned body | 按 channel/slot 保存 sendCount、recvCount，host 线程采样和完成快照 | 采集路径存在，协议数值尚未逐协议验收 |
 | 生命周期 | RCCL communicator 绑定诊断线程；kernel 完成后回调；RecordPool 只保留 body 注册/消费 | 已去掉未接生产调用的 plan/channel 状态机；容量策略仍是工程行为 |
 | Ring/Tree | JSONL 输出 ring 邻居、tree 层级，analyzer 有基础比较 | 真实拓扑诊断尚未验收 |
@@ -18,7 +18,7 @@
 
 ## 重做优先级
 
-1. 先补齐 header/body 的真实字段映射：`kernelIndex`、`mode`、`counter`、`detectChannel`、TraceID 扩展位，并确认 device/host 对同一 body 的读写顺序。
+1. 将已核对的 header/body 结构接入生产路径：四个 8-byte header 字段、60-byte TraceID（含 44-byte reserved extension）、按 channel 的两项 8-byte body；确认 device/host 对同一 body 的读写顺序。
 2. 再按图示实现 slow/hang 最小决策：未进入、部分 rank 未完成、全体停滞三类；输入只使用已有 host/kernel 状态、开始结束时间和 send/recv rate。
 3. 最后做 Simple、LL、LL128 数值核对和 Ring/Tree 双节点实验。
 
