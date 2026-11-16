@@ -1,15 +1,9 @@
-# CCL-D 复现目标
+# CCL-D 复现模型
 
-本项目以 AntCCL 的通信诊断系统为复现目标，项目对外名称为 CCL-D。复现重点是 RCCL 内的高精度通信观测与集中式分析，不把单纯的数据面正确性或 monitor 能运行视为完成。
+CCL-D 复现材料定义的通信诊断链路：RCCL 在通信路径采集证据，pinned-memory body 保存 channel 状态，诊断线程输出指标，monitor 按通信域和操作身份做跨 rank 分析。
 
-## 目标语义
+一次用户 collective 使用 `TraceID = commId + counter + 扩展位` 标识。`kernelIndex` 指向 LRU body；同一 TraceID 的 work、channel 和 plan 必须保持身份隔离，body 完成后才能回收。资源不足只影响观测，不得改变通信行为或借用其他操作的诊断身份。
 
-一次用户操作以 `TraceID = commId + counter + 扩展位` 标识。`kernelIndex` 是 pinned-memory body 的物理槽位。该操作涉及的所有 rank、channel、work 和 plan 都必须归入同一身份；body 保留 channel 维度的收发计数。分析器使用这些证据识别参数不一致、通信停滞/变慢和拓扑异常。
+材料明确的指标包括集合通信开始/结束时间、算法、协议、操作规模、sendCount/recvCount 和 sendRate/recvRate。Ring 按同一通信域横向比较；Tree 按同层 rank 比较。LL/LL128 的 send/recv 计数点与 Simple 不同，必须分别验证。
 
-Ring 按一次 collective 的 rank/邻居关系比较；Tree 按 channel 和层级比较。Simple、LL、LL128 的计数点按协议分别核对。诊断资源不足只能造成显式观测缺失，不能阻塞通信或伪装成通信故障。
-
-## 当前边界
-
-已有 RCCL 插桩原型、host/device 诊断记录、采样与 completion 输出、P2P/AllToAll 关联、基础 analyzer/monitor，以及 gfx936 双节点五类算子数据面回归。操作跨 plan 的统一归属、RCCL 完成通知与最终回收、协议计数实测仍未闭环。
-
-准确状态与验收条件分别见 [CCL-D_STATUS.md](CCL-D_STATUS.md)、[ROADMAP.md](ROADMAP.md) 和 [CCL-D_TEST_PLAN.md](CCL-D_TEST_PLAN.md)。
+当前已实现 host/device 记录、channel/peer 计数、协议字段、P2P/AllToAll 父子关联、Ring/Tree 基础分析和故障证据注入。尚未完成的工作只保留在 [状态文档](CCL-D_STATUS.md) 和 [测试计划](CCL-D_TEST_PLAN.md) 中。

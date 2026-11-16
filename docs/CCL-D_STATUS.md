@@ -1,42 +1,49 @@
-# CCL-D 状态总览
+# CCL-D 当前状态
 
-本文按“代码存在”和“运行语义已验收”区分状态。
+本文只记录已经由代码或测试证明的事实。参考材料没有规定的实现选择，标记为 CCL-D 的工程策略。
 
-## 已验收
+## 已完成并验证
 
-| 项目 | 证据 |
+| 能力 | 证据 |
 |---|---|
-| gfx936 独立 RCCL 构建与安装 | `ccld-artifacts/full-gfx936/` |
-| 双节点 8 rank 启动与共享存储 | HPDPS-6/7，SSH 2234，共享 `/workspace` |
-| AllGather、ReduceScatter、Broadcast、AllToAll、P2P 数据正确性 | 多算子 slot 回归通过 |
-| 参数、缺失 rank、P2P 配对和合成 slow/stall 分析 | analyzer/monitor 单测与故障矩阵通过 |
-| grouped P2P 与 AllToAll 父操作关联 | 双节点回放验证，无 P2P 未关联告警 |
-| Ring 结构检查 | 邻居闭合、partial channel pending 和误报回归已覆盖 |
-| Python analyzer/monitor | 47 项单测通过 |
+| gfx936 RCCL 独立构建和安装 | `ccld-artifacts/full-gfx936/`、独立安装前缀 |
+| 双节点 8 rank 通信 | HPDPS-6/7，共享 `/workspace`，SSH 2234 |
+| AllGather、ReduceScatter、Broadcast、AllToAll、P2P 数据正确性 | 五算子双节点回归通过 |
+| TraceID 传递 | host enqueue、collective/P2P work 和 device body 使用同一 counter |
+| AllToAll 父操作关联 | slot 不足时子 Send/Recv 不再继承其他操作的 batch 身份 |
+| pinned body 观测 | channel send/recv、peer、算法、协议和时间戳输出 |
+| LRU 容量配置 | `RCCL_CCLD_SLOTS` 运行时配置，无需重编译 |
+| 采样与统计模式 | `RCCL_CCLD_SAMPLE_US`、`RCCL_CCLD_MODE` 运行时配置 |
+| 资源耗尽语义 | 无 body 的 work 不阻塞通信、不写伪 completion，monitor 可报告观测丢失 |
+| Simple/LL/LL128 插桩入口 | 已按材料放置 send/recv 计数点，待专项数值验收 |
+| analyzer/monitor 基础规则 | 参数、缺 rank、P2P、AllToAll、Ring/Tree 和合成 slow/stall 测试通过 |
+| Python 与 record pool 单测 | 48 项 Python 测试和 record pool 单测通过 |
 
-## 已接入但尚未完成运行时验收
+## 当前已测结果
 
-| 项目 | 当前状态 | 验收缺口 |
-|---|---|---|
-| 操作级 TraceID 与 `kernelIndex` | host 已分配并传入 collective/P2P work | 跨多个 plan/work/channel 的唯一归属尚未证明 |
-| pinned body 与 slot 回收 | slot 容量、200 微秒采样周期和统计 mode 均已支持运行时配置 | 默认 16-slot 在 20 轮测试出现资源耗尽；较大容量通过有限轮次，真实生命周期闭环仍未验收 |
-| AllToAll 父操作 | 已接入单轮路径 | 多 plan、长轮次仍需验证 |
-| Ring/Tree 分析 | Ring 基础规则已验收，Tree 有规则 | 真实 Tree 多节点长期回归未完成 |
+2026-11-16，双节点 8 rank、五算子、默认 16 slots：
 
-## 尚未完成的核心实现
+- 20 轮：960/960 条 enqueue 为 `RECORDED`，无 `RESOURCE_EXHAUSTED`；
+- 100 轮：4800/4800 条 enqueue 为 `RECORDED`，无 `RESOURCE_EXHAUSTED`；
+- 100 轮测试中 10,000 条 completion 均来自 CCL-D body 路径，没有 legacy 伪 completion；
+- 通信数据和 monitor 检查通过。
 
-1. **完成通知**：将 RCCL plan/work 的真实完成边界连接到诊断记录，区分 channel 完成和整个 TraceID 完成。
-2. **跨 plan 聚合**：同一用户操作的所有 body 必须在最终收口后再回收，不能由单个 kernel 完成事件提前释放。
-3. **协议计数**：按材料逐条核对 Simple、LL、LL128 的计数位置和 mode 语义，并用实际传输规模验证。
-4. **真实 slow/hang 验收**：当前故障注入主要改变诊断证据，不等价于 GPU kernel、驱动或网络故障。
-5. **长期资源验收**：100/1000 轮、多 communicator/stream 下确认无资源泄漏、观测丢失和错误回收。
+此前出现的资源耗尽来自两个已修复的实现错误：无 slot 的 work 被合并到前一个诊断 batch，以及旧 collTrace 路径重复输出无 body completion。不能再把旧测试结果当作当前版本结论。
 
-## 已确定的实现语义
+## 尚需验收的内容
 
-- LRU body 用尽：记录显式丢失，通信继续；输出 `RESOURCE_EXHAUSTED` 或 `OBSERVATION_DROPPED`。
-- 多 channel/work/plan：以同一 TraceID 的全部预期 body 完成为整体结束；单个 kernel 不得提前回收。
-- `MISSING_COMPLETION` 只用于已经成功分配记录但未收到预期完成通知的情况。
+1. 跨多个 RCCL plan 的同一用户操作，验证 TraceID/body 在真实拆分场景下只收口一次。
+2. Simple、LL、LL128 在已知消息规模下的逐协议计数数值核对，分别验证 mode 1 和 mode 2。
+3. Tree 算法真实双节点长期回归，以及 Ring/Tree 首错 rank 的 slow/hang 判定。
+4. 多 communicator、多 stream、HIP graph 和 communicator 销毁过程中的 body 回收。
+5. 1000 轮及训练任务中的性能、pinned memory 和诊断线程开销。
 
-## 当前证据边界
+## 运行时参数
 
-2026-11-16 双节点 8-rank 五算子回归：`RCCL_CCLD_SLOTS=64`、20 轮时 960/960 enqueue 成功；默认 16、20 轮时 98 条 `RESOURCE_EXHAUSTED`；128 slots、100 轮时 4800/4800 enqueue 成功，50,000 条 channel completion。数据通信正确且 monitor 退出码为 0。大容量只验证运行时参数和该轮数下的容量，不代表生命周期回收已符合 AntCCL；需要查明 callback 收口及 LRU 复用为何没有及时释放。
+```bash
+RCCL_CCLD_SLOTS=16       # 每 channel 的 body 数
+RCCL_CCLD_SAMPLE_US=200  # 采样周期，微秒
+RCCL_CCLD_MODE=1         # 0 关闭，1 tid0 统计，2 所有 tid 原子统计
+```
+
+所有 rank 必须使用相同值。参数变化不需要重新编译；mode 2 会增加 device 原子操作开销。

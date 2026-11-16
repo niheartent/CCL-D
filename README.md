@@ -1,8 +1,8 @@
 # CCL-D：集合通信诊断扩展
 
-本项目以 AntCCL 的诊断系统为复现目标，项目名称统一为 CCL-D。目标链路是：RCCL 为一次用户操作采集跨 rank、channel、work 的通信证据，monitor 按操作身份聚合并判断参数异常、slow、hang 和拓扑问题。
+本项目以材料中的通信诊断系统为复现目标，项目名称统一为 CCL-D。目标链路是：RCCL 为一次用户操作采集跨 rank、channel、work 的通信证据，monitor 按操作身份聚合并判断参数异常、slow、hang 和拓扑问题。
 
-当前已有 gfx936 RCCL 插桩原型、五类算子双节点数据面回归和分析器测试。跨 plan 操作归属、完成通知与最终回收、Simple/LL/LL128 精确计数尚未完成；详细状态只维护在 [状态文档](docs/CCL-D_STATUS.md)，目标模型见 [复现说明](docs/CCL-D.md)。
+当前已完成 gfx936 RCCL 插桩、双节点五类算子回归、TraceID 隔离和 pinned body completion 路径。Simple/LL/LL128 计数的数值核对、跨 plan 及多 communicator/stream 生命周期验收、Tree slow/hang 分析和训练性能评估仍待完成；详细状态见[状态文档](docs/CCL-D_STATUS.md)，目标模型见[复现说明](docs/CCL-D.md)。
 
 ## 已验证环境
 
