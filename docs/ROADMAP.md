@@ -1,19 +1,23 @@
-# CCL-D 后续路线
+# CCL-D 复现路线
 
-## 1. TraceID 生命周期专项验收
+路线只围绕 参考材料 材料明确的最小闭环：采集通信证据、按周期计算速率、在 kernel 完成后形成操作级结果，并按 Ring/Tree 比较。材料未定义的工程扩展不作为主线目标。
 
-构造真实的多 plan、多 work、多 channel collective，验证同一用户操作只产生一次最终收口，且 AllToAll 展开的 P2P 始终保留父身份。覆盖重复完成通知、缺失通知和 communicator 销毁。
+## 当前阶段：采集链路核验
 
-## 2. 协议计数专项验收
+- 固定 RCCL 版本与 gfx936 构建产物，保存 commit、环境和日志。
+- 逐协议核对 Simple、LL、LL128 的 send/recv 计数位置和数值。
+- 核对 TraceID、channel、算法、协议、规模、开始/结束时间在 JSONL 中的一致性。
 
-按材料对 Simple、LL、LL128 选择稳定消息规模，逐项核对 send/recv 插入点、channel 归属和累计字节数；分别测试 mode 1 和 mode 2。
+## 下一阶段：分析规则验证
 
-## 3. 分析器专项验收
+- 用真实 Ring 数据做跨 rank 对比。
+- 用真实 Tree 数据做同层 rank 对比。
+- 将每次判定所用的输入指标、阈值和输出保存，避免把合成输入测试当成端到端结果。
 
-补齐真实 Tree 拓扑和长轮次 Ring/Tree 对比，验证 slow/hang 的首错 rank、同层比较和通信速率判定。
+## 最后阶段：可用性评估
 
-## 4. 长期与训练场景
+- 注入可控的慢速或停滞条件，测检测延迟、误报和漏报。
+- 做关闭诊断与开启诊断的性能及内存对照。
+- 只有在上述证据稳定后，才评估多 communicator、stream、graph 等工程场景。
 
-执行 1000 轮、多 communicator、多 stream、graph 和真实训练任务，记录数据正确性、completion 收口、pinned memory、CPU 开销和吞吐影响。
-
-Graph、CollNet、NVLS、MSCCL、真实驱动/网络故障和通信自愈属于扩展实验，不作为当前核心完成条件。
+slot 容量、资源耗尽降级、plan 聚合、AllToAll/P2P 关联等继续保留时，必须作为独立工程扩展记录；它们不属于材料已定义的复现路线。

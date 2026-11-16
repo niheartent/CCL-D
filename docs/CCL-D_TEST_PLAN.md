@@ -1,27 +1,27 @@
-# CCL-D 核心测试计划
+# CCL-D 最小验证计划
 
-每项实验保存 commit、RCCL build/install 前缀、rank 映射、环境变量、原始 JSONL、monitor 输出和退出码。
+每次实验保存 RCCL commit、构建/安装前缀、节点和 rank 映射、环境变量、原始 JSONL、monitor 输出和退出码。先验证采集，再验证分析；不要用合成记录代替真实通信结果。
 
-## TraceID 与生命周期
+## 1. 采集正确性
 
-覆盖多 plan/work/channel、AllToAll 父子 P2P、重复完成、缺失完成和 communicator 销毁。
+对固定消息规模分别触发 Simple、LL、LL128，记录操作类型、算法、协议、开始/结束时间、channel、sendCount、recvCount。mode 0 应无计数；mode 1 与 mode 2 在单一稳定操作上应得到一致总量（允许原子更新时序差异，但不能改变最终计数）。
 
-通过条件：TraceID 不串操作；flush callback 只处理本次 plan 集合；所有 body 只收口一次；无 body 的 work 不产生 completion；通信不因观测资源不足阻塞。
+通过条件：计数位置与材料一致，方向和 channel 不串，已知传输规模可解释；不以 peer 字节分摊或额外字段替代材料要求的 send/recv 计数。
 
-## 协议计数
+## 2. 操作级完成
 
-分别触发 Simple、LL、LL128，核对材料规定的计数位置、方向、channel 和总字节数；mode 1 只由 tid0 统计，mode 2 验证原子计数结果。
+运行单节点和双节点的 AllReduce、AllGather、ReduceScatter、Broadcast、AllToAll、P2P，校验通信数据，同时检查 TraceID、开始/结束时间和 callback 结果。多 plan 或多 channel 只作为当前工程实现的回归输入，不预设材料规定了某种收口算法。
 
-通过条件：协议归属正确，计数与已知传输规模相符，不能用其他协议的结果推断当前协议。
+通过条件：通信正确；每条输出能追溯到一个操作和通信域；没有重复完成或把不同操作的计数混在一起。
 
-## 双节点回归
+## 3. Ring/Tree 分析
 
-HPDPS-6/7 运行 AllGather、ReduceScatter、Broadcast、AllToAll 和 P2P，先 20 轮，再 100/1000 轮；默认 `RCCL_CCLD_SLOTS=16`，另测容量参数变化。
+分别保存 Ring 和 Tree 的实际拓扑及各 rank 原始指标。Ring 只做同一操作的跨 rank 比较；Tree 按同一层 rank 比较。每个 slow/hang 输出必须同时给出参与比较的 rank、sendRate/recvRate、时间区间和规则结果。
 
-通过条件：数据正确；TraceID 与 completion 归属一致；无伪 completion、错误回收或跨 rank 身份混合。另用极小 slot 容量主动触发观测丢失，确认 monitor 报告 `OBSERVATION_DROPPED`，无 body 的操作没有 completion，且通信成功。
+通过条件：改变一个 rank 的输入指标只影响应受影响的比较结果；同层关系来自真实拓扑，而不是固定 rank 编号假设。
 
-## 故障与分析
+## 4. 可控异常与开销
 
-合成注入覆盖参数错误、缺 rank、slow、stall、missing completion 和 P2P/AllToAll 缺边。合成注入只验证 monitor 决策，不等价于真实 GPU、驱动或网络故障。
+使用可重复的慢速/停滞场景验证端到端检测延迟；合成 JSON 仅用于 analyzer 单测。另做关闭诊断与启用诊断的吞吐、延迟、CPU 和 pinned-memory 对照。
 
-真实训练、驱动/网络故障和性能对照作为扩展实验，必须单独记录，不能用合成注入结果代替。
+通过条件：异常场景通信行为和诊断输出分别记录；报告误报、漏报和检测延迟；资源容量和故障注入接口只作为本项目扩展说明，不宣称为 参考材料 原始机制。
