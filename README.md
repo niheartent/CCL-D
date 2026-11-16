@@ -10,11 +10,13 @@
 
 ```bash
 source /opt/dtk-26.04/env.sh
-cmake -S . -B ccld-artifacts/my-build \
+cmake -S . -B rccl-artifacts/my-build \
   -DCMAKE_BUILD_TYPE=Release -DGPU_TARGETS=gfx936 -DBUILD_TESTS=OFF \
-  -DCMAKE_INSTALL_PREFIX="$PWD/ccld-artifacts/my-install"
-cmake --build ccld-artifacts/my-build -j16
-cmake --install ccld-artifacts/my-build
+  -DCMAKE_INSTALL_PREFIX="$PWD/rccl-artifacts/my-install"
+cmake --build rccl-artifacts/my-build -j8
+cmake --install rccl-artifacts/my-build
 ```
+
+Build directories and installed libraries should stay under `rccl-artifacts/` so generated objects and libraries remain separate from source changes. `RCCL_CCLD_SLOTS` sets the per-communicator frame capacity at runtime; the default is 16 and can be changed without recompiling.
 
 Python 单测：`python3 -m unittest discover -s tools/tests -v`。实现评估见 [状态](docs/CCL-D_STATUS.md)，验收步骤见 [测试计划](docs/CCL-D_TEST_PLAN.md)。

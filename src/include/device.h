@@ -14,6 +14,7 @@
 #include <hip/hip_bfloat16.h>
 #include "nccl_common.h"
 #include "bitops.h"
+#include "ccld_data.h"
 #if defined(ENABLE_NPKIT)
 #include "npkit/npkit_struct.h"
 #endif
@@ -419,39 +420,9 @@ static_assert(sizeof(struct ncclProf) == 256, "ncclProf must have size of 256");
 #endif
 
 #ifdef ENABLE_COLLTRACE
-struct alignas(16) ncclCcldDiag {
-#define CCLD_MAX_PEER_SLOTS NCCL_MAX_ARITY
-  uint64_t opCount;
-  uint64_t ccldCounter;
-  uint64_t relatedCcldCounter;
-  uint64_t droppedBatches;
-  uint64_t sendCount;
-  uint64_t recvCount;
-  uint64_t sendCountByProto[3];
-  uint64_t recvCountByProto[3];
-  uint8_t sendPeerCount;
-  uint8_t recvPeerCount;
-  uint8_t peerOverflow;
-  uint8_t activeSendPeerCount;
-  uint8_t activeRecvPeerCount;
-  int16_t sendPeerIds[CCLD_MAX_PEER_SLOTS];
-  int16_t recvPeerIds[CCLD_MAX_PEER_SLOTS];
-  uint8_t activeSendSlots[CCLD_MAX_PEER_SLOTS];
-  uint8_t activeRecvSlots[CCLD_MAX_PEER_SLOTS];
-  uint64_t sendBytesByPeer[CCLD_MAX_PEER_SLOTS];
-  uint64_t recvBytesByPeer[CCLD_MAX_PEER_SLOTS];
-  uint64_t sendBytesByProtocolPeer[3][CCLD_MAX_PEER_SLOTS];
-  uint64_t recvBytesByProtocolPeer[3][CCLD_MAX_PEER_SLOTS];
-  uint64_t startTimestamp;
-  uint64_t endTimestamp;
-  uint32_t state; // 0 idle, 1 accumulating, 2 finalized by launch completion callback
-  uint16_t channel;
-  uint16_t funcIndex;
-  uint8_t algorithm;
-  uint8_t protocol;
-  int16_t treeUp;
-  int16_t treeDown[3];
-  int16_t treeDepth;
+struct alignas(8) ncclCcldDiag {
+  rccl_ccld::Header header;
+  rccl_ccld::ChannelBody channels[MAXCHANNELS];
 };
 
 typedef enum {

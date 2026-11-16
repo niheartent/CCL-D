@@ -1,25 +1,16 @@
-# CCL-D 实现评估
+# CCL-D 当前状态
 
-本项目以脱敏参考材料中的数据链路为实现依据。图示明确了四个层次：通信域提供 rank/channel/path 信息，操作层提供 collective、算法和协议，pinned memory 保存按 channel 的 send/recv body，diagnose thread 周期读取并由 kernel hostcallback 通知完成；分析器再按 Ring 全 rank、Tree 同层 rank 比较。
+实现依据是参考材料的图文定义：TraceID、pinned frame、kernel 完成通知、diagnose thread，以及 Ring 全 rank和 Tree 同层比较。44-byte 扩展区只保留空间，当前没有字段和语义。
 
-## 当前代码
-
-| 项目 | 现状 | 结论 |
+| 部分 | 当前实现 | 验证状态 |
 |---|---|---|
-| TraceID | 新 `ccld_data.h` 定义 60-byte 存储布局：8-byte commId、8-byte counter、44-byte 预留区（当前无定义） | 单测已验证字段宽度；尚未接入生产记录路径 |
-| pinned body | 按 channel/slot 保存 sendCount、recvCount，host 线程采样和完成快照 | 采集路径存在，协议数值尚未逐协议验收 |
-| 生命周期 | RCCL communicator 绑定诊断线程；kernel 完成后回调；RecordPool 只保留 body 注册/消费 | 已去掉未接生产调用的 plan/channel 状态机；容量策略仍是工程行为 |
-| Ring/Tree | JSONL 输出 ring 邻居、tree 层级，analyzer 有基础比较 | 真实拓扑诊断尚未验收 |
-| slow/hang | 有参数/缺 rank/完成/速率规则及合成输入测试 | 尚未证明图片所示决策链在真实通信中正确定位根因 |
+| TraceID/Header | `commId + counter + reserved[44]`；header 保存 KID、mode、counter、detectChannel | host 布局单测通过；待 gfx936 运行核对 |
+| channel body | 每个 block 按 channel 保存 `sendCount/recvCount` 两个 64-bit 计数 | 结构迁移完成；待 Simple/LL/LL128 运行核对 |
+| 生命周期 | enqueue 保留 block；kernel callback 排队 counter；diagnose thread 输出后释放；destroy 时 drain | 代码完成；待设备任务验证 |
+| 资源不足 | 没有可用 free block 时输出 `OBSERVATION_DROPPED`，通信继续，不覆盖 active block | analyzer 单测覆盖 |
+| Ring/Tree | 输出 Ring 邻居或 Tree parent/children/depth；Ring 全 rank、Tree 同层比较 | 合成单测通过；待双节点真实拓扑验证 |
+| slow/hang | 缺 rank、未完成、速率异常、同节点停滞和拓扑不对称规则 | 合成单测通过；待受控运行场景验证 |
 
-## 明确删除的错误扩展
+`RCCL_CCLD_SLOTS` 是运行时参数，默认值只用于初始化，可通过环境变量调整；代码不依赖固定 16 slot。通信观测只使用材料定义的 header、channel send/recv body 和生命周期事件，不加入 peer 字节矩阵、协议矩阵或自定义父操作状态。
 
-不再把固定 slot 数、资源耗尽行为、跨 plan 收口算法、AllToAll 父子关联、peer 字节分摊和故障注入当作材料要求。它们只有在有实际诊断收益且不影响通信时才作为独立扩展；当前不继续扩大。
-
-## 重做优先级
-
-1. 将已核对的 frame/block/channel 结构接入生产路径：四个 8-byte header 字段、60-byte TraceID 存储布局（44-byte 预留区当前无定义）、每 channel 两项 8-byte body；确认 device/host 使用相同索引和读写顺序。
-2. 再按图示实现 slow/hang 最小决策：未进入、部分 rank 未完成、全体停滞三类；输入只使用已有 host/kernel 状态、开始结束时间和 send/recv rate。
-3. 最后做 Simple、LL、LL128 数值核对和 Ring/Tree 双节点实验。
-
-当前没有有效的新编译产物；旧构建目录已清理。下一次编译应在上述字段映射和决策实现完成后集中进行。
+gfx936 独立构建已完成并安装到 `rccl-artifacts/ccld-frame-gfx936/install/`；最终链接日志只有 dcc 未使用参数警告。4-rank gfx936 单节点 20 轮回归已通过 AllGather、ReduceScatter、Broadcast、AllToAll、P2P 数据校验。`RCCL_CCLD_SLOTS=256` 时无观测丢失，monitor 输出 416 个 OK、4 个 enqueue skew；`RCCL_CCLD_SLOTS=2` 时通信仍通过，923 个操作记录为 `OBSERVATION_DROPPED`，符合容量不足策略。双节点 HPDPS-6/7 尚未在本轮运行。

@@ -7,45 +7,26 @@
 
 struct ncclInfo;
 struct ncclComm;
-struct ncclInfo;
-struct ncclCcldDiag;
 struct ncclKernelPlan;
 #ifdef ENABLE_COLLTRACE
 struct ncclCollTrace;
 #endif
 
-// Record the host-side beginning of a collective operation.  The recorder is
-// disabled by default and is intentionally independent of the transport path.
 void rcclCcldRecordEnqueue(struct ncclInfo* info);
 void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
-                          uint64_t relatedCounter, uint16_t channel);
+                          uint16_t channel,
+                          int algorithm, int protocol);
 void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm,
                                  const uint64_t* counters, size_t count);
+void rcclCcldDrainDiagnostics(const struct ncclComm* comm);
 void rcclCcldRegisterPlanCounter(struct ncclKernelPlan* plan, uint64_t counter);
-bool rcclCcldBeginParent(struct ncclInfo* info);
-void rcclCcldEndParent();
-
-class ncclCcldParentScope {
- public:
-  explicit ncclCcldParentScope(struct ncclInfo* info) : active_(rcclCcldBeginParent(info)) {}
-  ~ncclCcldParentScope() { if (active_) rcclCcldEndParent(); }
-  ncclCcldParentScope(const ncclCcldParentScope&) = delete;
-  ncclCcldParentScope& operator=(const ncclCcldParentScope&) = delete;
- private:
-  bool active_;
-};
 bool rcclCcldEnabled();
-
-// Release per-communicator diagnostic state after RCCL has accepted destroy.
 void rcclCcldForgetComm(const struct ncclComm* comm);
-void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
-                              const struct ncclCcldDiag* diag);
 void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t opCount,
                                uint16_t channel, uint64_t sendCount,
                                uint64_t recvCount, uint64_t timestampNs,
                                uint64_t sendDelta, uint64_t recvDelta,
                                uint64_t elapsedNs, bool counterReset);
-
 #ifdef ENABLE_COLLTRACE
 void rcclCcldRecordDevice(const struct ncclComm* comm,
                           const struct ncclCollTrace* trace,

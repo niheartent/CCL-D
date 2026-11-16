@@ -42,76 +42,34 @@
   asm volatile ("s_getreg_b32 %0, hwreg(HW_REG_HW_ID)" : "=s" (collTrace->data_0));
 #endif
 #ifdef ENABLE_COLLTRACE
-#define CCLD_DIAG_SLOT_INDEX ((ncclShmem.channelId * ncclShmem.comm.ccldDiagSlots) + ncclShmem.ccldDiagSlot)
-#define CCLD_DIAG_SLOT_PTR (ncclShmem.comm.ccldDiag + CCLD_DIAG_SLOT_INDEX)
+#define CCLD_DIAG_SLOT_PTR (ncclShmem.comm.ccldDiag + ncclShmem.ccldDiagSlot)
+#define CCLD_DIAG_BODY_PTR (&CCLD_DIAG_SLOT_PTR->channels[ncclShmem.channelId])
   #define CCLD_DIAG_RESET() do { \
     if (threadIdx.x == 0 && ncclShmem.ccldDiagActive) { \
-      struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR; \
-      __atomic_store_n(&ccld->droppedBatches, 0ULL, __ATOMIC_RELAXED); \
       __atomic_store_n(&ncclShmem.collTraceTail->diag.sendCount, 0ULL, __ATOMIC_RELAXED); \
       __atomic_store_n(&ncclShmem.collTraceTail->diag.recvCount, 0ULL, __ATOMIC_RELAXED); \
-      for (int proto = 0; proto < 3; ++proto) { \
-        __atomic_store_n(&ccld->sendCountByProto[proto], 0ULL, __ATOMIC_RELAXED); \
-        __atomic_store_n(&ccld->recvCountByProto[proto], 0ULL, __ATOMIC_RELAXED); \
-      } \
-      ccld->sendPeerCount = 0; ccld->recvPeerCount = 0; ccld->peerOverflow = 0; \
-      ccld->activeSendPeerCount = 0; ccld->activeRecvPeerCount = 0; \
-      for (int peer = 0; peer < CCLD_MAX_PEER_SLOTS; ++peer) { \
-        ccld->sendPeerIds[peer] = -1; ccld->recvPeerIds[peer] = -1; ccld->activeSendSlots[peer] = 0xff; ccld->activeRecvSlots[peer] = 0xff; \
-        __atomic_store_n(&ccld->sendBytesByPeer[peer], 0ULL, __ATOMIC_RELAXED); \
-        __atomic_store_n(&ccld->recvBytesByPeer[peer], 0ULL, __ATOMIC_RELAXED); \
-        for (int proto = 0; proto < 3; ++proto) { \
-          __atomic_store_n(&ccld->sendBytesByProtocolPeer[proto][peer], 0ULL, __ATOMIC_RELAXED); \
-          __atomic_store_n(&ccld->recvBytesByProtocolPeer[proto][peer], 0ULL, __ATOMIC_RELAXED); \
-        } \
-      } \
-      ccld->channel = (uint16_t)ncclShmem.channelId; \
-      ccld->treeUp = -1; ccld->treeDown[0] = -1; ccld->treeDown[1] = -1; ccld->treeDown[2] = -1; ccld->treeDepth = -1; \
-      __atomic_store_n(&ccld->state, 0u, __ATOMIC_RELEASE); \
     } \
   } while (0)
-  #define CCLD_DIAG_SET_PEERS(SENDPEERS, NSEND, RECVPEERS, NRECV) do { \
-    if (tid == 0 && ncclShmem.ccldDiagActive) { \
-      struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR; \
-      ccld->activeSendPeerCount = 0; ccld->activeRecvPeerCount = 0; \
-      for (int peer = 0; peer < (NSEND); ++peer) { \
-        int slot = -1; for (int j = 0; j < ccld->sendPeerCount; ++j) if (ccld->sendPeerIds[j] == (SENDPEERS)[peer]) slot = j; \
-        if (slot < 0) { \
-          if (slot < 0 && ccld->sendPeerCount < CCLD_MAX_PEER_SLOTS) { slot = ccld->sendPeerCount++; ccld->sendPeerIds[slot] = (int16_t)(SENDPEERS)[peer]; } \
-        } \
-        if (slot >= 0 && ccld->activeSendPeerCount < CCLD_MAX_PEER_SLOTS) ccld->activeSendSlots[ccld->activeSendPeerCount++] = (uint8_t)slot; else ccld->peerOverflow = 1; \
-      } \
-      for (int peer = 0; peer < (NRECV); ++peer) { \
-        int slot = -1; for (int j = 0; j < ccld->recvPeerCount; ++j) if (ccld->recvPeerIds[j] == (RECVPEERS)[peer]) slot = j; \
-        if (slot < 0) { \
-          if (slot < 0 && ccld->recvPeerCount < CCLD_MAX_PEER_SLOTS) { slot = ccld->recvPeerCount++; ccld->recvPeerIds[slot] = (int16_t)(RECVPEERS)[peer]; } \
-        } \
-        if (slot >= 0 && ccld->activeRecvPeerCount < CCLD_MAX_PEER_SLOTS) ccld->activeRecvSlots[ccld->activeRecvPeerCount++] = (uint8_t)slot; else ccld->peerOverflow = 1; \
-      } \
-    } \
-  } while (0)
+  #define CCLD_DIAG_SET_PEERS(SENDPEERS, NSEND, RECVPEERS, NRECV) do { } while (0)
   #define CCLD_DIAG_ADD(SEND, RECV) do { \
-    if ((ncclShmem.comm.ccldDiagMode == 2 || tid == 0) && ncclShmem.ccldDiagActive) { \
+    if ((ncclShmem.comm.ccldDiagMode == 2 || tid == 0) && \
+        (ncclShmem.ccldDiagActive || ncclShmem.ccldDiagActive2)) { \
       if ((SEND) != 0) __atomic_fetch_add(&ncclShmem.collTraceTail->diag.sendCount, (uint64_t)(SEND), __ATOMIC_RELAXED); \
       if ((RECV) != 0) __atomic_fetch_add(&ncclShmem.collTraceTail->diag.recvCount, (uint64_t)(RECV), __ATOMIC_RELAXED); \
-      if (ncclShmem.ccldDiagActive) { \
-        struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR; \
-        if ((SEND) != 0) __atomic_fetch_add(&ccld->sendCount, (uint64_t)(SEND), __ATOMIC_RELAXED); \
-        if ((RECV) != 0) __atomic_fetch_add(&ccld->recvCount, (uint64_t)(RECV), __ATOMIC_RELAXED); \
-        const int proto = (ccld->protocol < 3) ? ccld->protocol : -1; \
-        if (proto >= 0) { \
-          if ((SEND) != 0) __atomic_fetch_add(&ccld->sendCountByProto[proto], (uint64_t)(SEND), __ATOMIC_RELAXED); \
-          if ((RECV) != 0) __atomic_fetch_add(&ccld->recvCountByProto[proto], (uint64_t)(RECV), __ATOMIC_RELAXED); \
-        } \
-        for (int peer = 0; peer < ccld->activeSendPeerCount; ++peer) \
-          if ((SEND) != 0) __atomic_fetch_add(&ccld->sendBytesByPeer[ccld->activeSendSlots[peer]], (uint64_t)(SEND) / ccld->activeSendPeerCount, __ATOMIC_RELAXED); \
-        for (int peer = 0; peer < ccld->activeRecvPeerCount; ++peer) \
-          if ((RECV) != 0) __atomic_fetch_add(&ccld->recvBytesByPeer[ccld->activeRecvSlots[peer]], (uint64_t)(RECV) / ccld->activeRecvPeerCount, __ATOMIC_RELAXED); \
-        if (proto >= 0) { \
-          for (int peer = 0; peer < ccld->activeSendPeerCount; ++peer) \
-            if ((SEND) != 0) __atomic_fetch_add(&ccld->sendBytesByProtocolPeer[proto][ccld->activeSendSlots[peer]], (uint64_t)(SEND) / ccld->activeSendPeerCount, __ATOMIC_RELAXED); \
-          for (int peer = 0; peer < ccld->activeRecvPeerCount; ++peer) \
-            if ((RECV) != 0) __atomic_fetch_add(&ccld->recvBytesByProtocolPeer[proto][ccld->activeRecvSlots[peer]], (uint64_t)(RECV) / ccld->activeRecvPeerCount, __ATOMIC_RELAXED); \
+      struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR; \
+      rccl_ccld::ChannelBody* body = CCLD_DIAG_BODY_PTR; \
+      if (__atomic_load_n(&ccld->header.mode, __ATOMIC_ACQUIRE) != 0 && \
+          __atomic_load_n(&ccld->header.counter, __ATOMIC_RELAXED) == ncclShmem.ccldCounter) { \
+          if (ncclShmem.ccldPrimarySend && (SEND) != 0) __atomic_fetch_add(&body->sendCount, (uint64_t)(SEND), __ATOMIC_RELAXED); \
+          if (ncclShmem.ccldPrimaryRecv && (RECV) != 0) __atomic_fetch_add(&body->recvCount, (uint64_t)(RECV), __ATOMIC_RELAXED); \
+      } \
+      if (ncclShmem.ccldDiagActive2) { \
+        struct ncclCcldDiag* ccld2 = ncclShmem.comm.ccldDiag + ncclShmem.ccldDiagSlot2; \
+        rccl_ccld::ChannelBody* body2 = &ccld2->channels[ncclShmem.channelId]; \
+        if (__atomic_load_n(&ccld2->header.mode, __ATOMIC_ACQUIRE) != 0 && \
+            __atomic_load_n(&ccld2->header.counter, __ATOMIC_RELAXED) == ncclShmem.ccldCounter2) { \
+          if (ncclShmem.ccldSecondarySend && (SEND) != 0) __atomic_fetch_add(&body2->sendCount, (uint64_t)(SEND), __ATOMIC_RELAXED); \
+          if (ncclShmem.ccldSecondaryRecv && (RECV) != 0) __atomic_fetch_add(&body2->recvCount, (uint64_t)(RECV), __ATOMIC_RELAXED); \
         } \
       } \
     } \
@@ -223,6 +181,12 @@ struct ncclShmemData {
   int aborted;
   int ccldDiagSlot;
   int ccldDiagActive;
+  uint64_t ccldCounter;
+  int ccldDiagSlot2;
+  int ccldDiagActive2;
+  uint64_t ccldCounter2;
+  int ccldPrimarySend, ccldPrimaryRecv;
+  int ccldSecondarySend, ccldSecondaryRecv;
   alignas(16) struct ncclDevComm comm;
   alignas(16) struct ncclDevChannel channel;
 
@@ -620,54 +584,54 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
   while (true) {
     if (tid == 0) __insert_timestamp(__LINE__);
     if (tid == 0 && ncclShmem.comm.ccldDiag != nullptr) {
-      uint64_t batchOpCount = 0;
       uint64_t batchCcldCounter = UINT64_MAX;
-      uint64_t batchRelatedCcldCounter = UINT64_MAX;
       uint32_t batchKernelIndex = UINT32_MAX;
-      uint8_t batchAlgorithm = 0xff;
-      uint8_t batchProtocol = 0xff;
+      uint64_t batchCcldCounter2 = UINT64_MAX;
+      uint32_t batchKernelIndex2 = UINT32_MAX;
+      struct ncclDevWorkP2p* p2pWork = nullptr;
       if (ncclShmem.workType == ncclDevWorkTypeP2p) {
-        struct ncclDevWorkP2p* p2p = (struct ncclDevWorkP2p*)ncclShmem.workStorage;
-        batchOpCount = p2p->sendOpCount != 0 ? p2p->sendOpCount : p2p->recvOpCount;
-        batchKernelIndex = p2p->sendCcldKernelIndex != UINT32_MAX ? p2p->sendCcldKernelIndex : p2p->recvCcldKernelIndex;
-        batchCcldCounter = p2p->sendCcldCounter != UINT64_MAX ? p2p->sendCcldCounter : p2p->recvCcldCounter;
-        if (p2p->sendCcldCounter != UINT64_MAX && p2p->recvCcldCounter != UINT64_MAX &&
-            p2p->sendCcldCounter != p2p->recvCcldCounter)
-          batchRelatedCcldCounter = p2p->sendCcldCounter == batchCcldCounter ? p2p->recvCcldCounter : p2p->sendCcldCounter;
-        batchProtocol = (p2p->sendProtoLL || p2p->recvProtoLL) ? NCCL_PROTO_LL : NCCL_PROTO_SIMPLE;
+        p2pWork = (struct ncclDevWorkP2p*)ncclShmem.workStorage;
+        batchKernelIndex = p2pWork->sendCcldKernelIndex != UINT32_MAX ? p2pWork->sendCcldKernelIndex : p2pWork->recvCcldKernelIndex;
+        batchCcldCounter = p2pWork->sendCcldCounter != UINT64_MAX ? p2pWork->sendCcldCounter : p2pWork->recvCcldCounter;
+        if (p2pWork->sendCcldKernelIndex != UINT32_MAX && p2pWork->recvCcldKernelIndex != UINT32_MAX &&
+            p2pWork->sendCcldCounter != p2pWork->recvCcldCounter) {
+          batchKernelIndex2 = p2pWork->recvCcldKernelIndex;
+          batchCcldCounter2 = p2pWork->recvCcldCounter;
+        }
       } else {
         struct ncclDevWorkColl* current = (struct ncclDevWorkColl*)ncclShmem.workStorage;
-        batchOpCount = current->opCount;
         batchKernelIndex = current->ccldKernelIndex;
         batchCcldCounter = current->ccldCounter;
-        batchAlgorithm = current->algorithm;
-        batchProtocol = current->protocol;
       }
       ncclShmem.ccldDiagSlot = (int)batchKernelIndex;
-      struct ncclCcldDiag* ccld = batchKernelIndex == UINT32_MAX ? nullptr : CCLD_DIAG_SLOT_PTR;
-      const uint32_t diagState = ccld ? __atomic_load_n(&ccld->state, __ATOMIC_ACQUIRE) : 0;
-      const bool sameOperation = ccld && ccld->ccldCounter == batchCcldCounter;
-      ncclShmem.ccldDiagActive = ccld != nullptr &&
-          ncclShmem.comm.ccldDiagMode != 0 &&
-          ((diagState == 0) || (diagState == 1 && sameOperation));
-      if (ncclShmem.ccldDiagActive) {
-        if (diagState == 0) {
-          CCLD_DIAG_RESET();
-          ccld->opCount = batchOpCount; ccld->funcIndex = ncclShmem.funcId;
-          ccld->ccldCounter = batchCcldCounter;
-          ccld->relatedCcldCounter = batchRelatedCcldCounter;
-          ccld->algorithm = batchAlgorithm; ccld->protocol = batchProtocol;
-          ccld->sendCount = 0; ccld->recvCount = 0;
-          ccld->startTimestamp = wall_clock64();
-          __atomic_store_n(&ccld->state, 1u, __ATOMIC_RELEASE);
-        }
-      } else if (ccld != nullptr) {
-        // The body is already active.  Preserve communication progress and
-        // report an observation loss without dereferencing a null slot.
-        __atomic_fetch_add(&ccld->droppedBatches, 1ULL, __ATOMIC_RELAXED);
+      ncclShmem.ccldCounter = batchCcldCounter;
+      ncclShmem.ccldPrimarySend = 1;
+      ncclShmem.ccldPrimaryRecv = 1;
+      ncclShmem.ccldSecondarySend = 0;
+      ncclShmem.ccldSecondaryRecv = 0;
+      if (p2pWork != nullptr) {
+        ncclShmem.ccldPrimarySend = p2pWork->sendCcldCounter == batchCcldCounter;
+        ncclShmem.ccldPrimaryRecv = p2pWork->recvCcldCounter == batchCcldCounter;
+      }
+      struct ncclCcldDiag* diag = batchKernelIndex < (uint32_t)ncclShmem.comm.ccldDiagSlots
+          ? CCLD_DIAG_SLOT_PTR : nullptr;
+      ncclShmem.ccldDiagActive = diag != nullptr && batchCcldCounter != UINT64_MAX &&
+          __atomic_load_n(&diag->header.mode, __ATOMIC_ACQUIRE) != 0 &&
+          __atomic_load_n(&diag->header.counter, __ATOMIC_RELAXED) == batchCcldCounter;
+      ncclShmem.ccldDiagSlot2 = (int)batchKernelIndex2;
+      ncclShmem.ccldCounter2 = batchCcldCounter2;
+      struct ncclCcldDiag* diag2 = batchKernelIndex2 < (uint32_t)ncclShmem.comm.ccldDiagSlots
+          ? ncclShmem.comm.ccldDiag + batchKernelIndex2 : nullptr;
+      ncclShmem.ccldDiagActive2 = diag2 != nullptr && batchCcldCounter2 != UINT64_MAX &&
+          __atomic_load_n(&diag2->header.mode, __ATOMIC_ACQUIRE) != 0 &&
+          __atomic_load_n(&diag2->header.counter, __ATOMIC_RELAXED) == batchCcldCounter2;
+      if (ncclShmem.ccldDiagActive2 && p2pWork != nullptr) {
+        ncclShmem.ccldSecondarySend = p2pWork->sendCcldCounter == batchCcldCounter2;
+        ncclShmem.ccldSecondaryRecv = p2pWork->recvCcldCounter == batchCcldCounter2;
       }
     } else if (tid == 0) {
       ncclShmem.ccldDiagActive = 0;
+      ncclShmem.ccldDiagActive2 = 0;
     }
     __syncthreads();
     if (tid == 0) __insert_timestamp(__LINE__);
@@ -688,10 +652,6 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
 #endif
     }
 
-    if (tid == 0 && ncclShmem.ccldDiagActive) {
-      struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR;
-      ccld->endTimestamp = wall_clock64();
-    }
     __syncthreads();
     if (ncclShmem.nextBatchIx == -1) break;
     int batchIx = ncclShmem.nextBatchIx;

@@ -131,7 +131,9 @@ static void addWorkBatchToPlan(
     enum ncclDevWorkType workType, int devFuncId, uint32_t workOffset,
     int p2pRound = -1, uint64_t ccldCounter = UINT64_MAX,
     uint32_t ccldKernelIndex = UINT32_MAX,
-    uint64_t relatedCcldCounter = UINT64_MAX
+    uint64_t secondCcldCounter = UINT64_MAX,
+    uint32_t secondCcldKernelIndex = UINT32_MAX,
+    int ccldAlgorithm = -1, int ccldProtocol = -1
   ) {
   ncclKernelPlanner::WipPlan::Channel* chan = &comm->planner.wipPlan.channels[channelId];
   size_t workSize = ncclDevWorkSize(workType);
@@ -187,11 +189,15 @@ static void addWorkBatchToPlan(
     plan->nWorkBatches += 1;
   }
   batch->offsetBitset |= 1ull<<(offset/workSize);
-  if (rcclCcldEnabled() && ccldKernelIndex != UINT32_MAX) {
-    rcclCcldRegisterBody(comm, ccldCounter, relatedCcldCounter, channelId);
-    rcclCcldRegisterPlanCounter(plan, ccldCounter);
-    if (relatedCcldCounter != UINT64_MAX)
-      rcclCcldRegisterPlanCounter(plan, relatedCcldCounter);
+  if (rcclCcldEnabled() && (ccldKernelIndex != UINT32_MAX || secondCcldKernelIndex != UINT32_MAX)) {
+    if (ccldKernelIndex != UINT32_MAX) {
+      rcclCcldRegisterBody(comm, ccldCounter, channelId, ccldAlgorithm, ccldProtocol);
+      rcclCcldRegisterPlanCounter(plan, ccldCounter);
+    }
+    if (secondCcldKernelIndex != UINT32_MAX) {
+      rcclCcldRegisterBody(comm, secondCcldCounter, channelId, -1, -1);
+      rcclCcldRegisterPlanCounter(plan, secondCcldCounter);
+    }
   }
   chan->wipBatch.workBytes += workSize;
   if (workType == ncclDevWorkTypeP2p) {
@@ -720,7 +726,8 @@ static ncclResult_t scheduleCollTasksToPlan(
         proxyOp.channelId = c;
         proxyOp.opCount = proxyOpId;
         addWorkBatchToPlan(comm, plan, c, workNode->workType, task->devFuncId, plan->workBytes,
-                           -1, devWork->ccldCounter, devWork->ccldKernelIndex);
+                           -1, devWork->ccldCounter, devWork->ccldKernelIndex,
+                           UINT64_MAX, UINT32_MAX, task->algorithm, task->protocol);
         NCCLCHECK(addProxyOpIfNeeded(comm, plan, &proxyOp));
       }
     } else { // not task->isCollnet
@@ -829,7 +836,8 @@ static ncclResult_t scheduleCollTasksToPlan(
         proxyOp->channelId = c;
         proxyOp->opCount = proxyOpId;
         addWorkBatchToPlan(comm, plan, c, workNode->workType, task->devFuncId, plan->workBytes,
-                           -1, devWork->ccldCounter, devWork->ccldKernelIndex);
+                           -1, devWork->ccldCounter, devWork->ccldKernelIndex,
+                           UINT64_MAX, UINT32_MAX, task->algorithm, task->protocol);
         NCCLCHECK(addProxyOpIfNeeded(comm, plan, proxyOp));
       }
     }
@@ -1069,10 +1077,12 @@ static ncclResult_t addP2pToPlan(
     plan->channelMask.masks[channelId/64] |= uint64_t(1)<<(channelId%64);
     // Add batch first.
     int funcIdx = ncclDevFuncId_P2p();
-    const uint64_t bodyCounter = sendP2p && sendP2p->ccldKernelIndex != UINT32_MAX ? sendP2p->ccldCounter : recvP2p ? recvP2p->ccldCounter : UINT64_MAX;
-    const uint32_t bodyIndex = sendP2p && sendP2p->ccldKernelIndex != UINT32_MAX ? sendP2p->ccldKernelIndex : recvP2p ? recvP2p->ccldKernelIndex : UINT32_MAX;
-    const uint64_t relatedCounter = sendP2p && recvP2p && sendP2p->ccldKernelIndex != UINT32_MAX && recvP2p->ccldKernelIndex != UINT32_MAX && sendP2p->ccldCounter != recvP2p->ccldCounter ? recvP2p->ccldCounter : UINT64_MAX;
-    addWorkBatchToPlan(comm, plan, channelId, ncclDevWorkTypeP2p, funcIdx, workOffset, p2pRound, bodyCounter, bodyIndex, relatedCounter);
+    const uint64_t sendCounter = sendP2p ? sendP2p->ccldCounter : UINT64_MAX;
+    const uint32_t sendIndex = sendP2p ? sendP2p->ccldKernelIndex : UINT32_MAX;
+    const uint64_t recvCounter = recvP2p ? recvP2p->ccldCounter : UINT64_MAX;
+    const uint32_t recvIndex = recvP2p ? recvP2p->ccldKernelIndex : UINT32_MAX;
+    addWorkBatchToPlan(comm, plan, channelId, ncclDevWorkTypeP2p, funcIdx, workOffset,
+                       p2pRound, sendCounter, sendIndex, recvCounter, recvIndex, 255, -1);
     if (funcIdx < 0) {
       WARN("%s: unsupported collective. Please ensure the collective has been enabled in build.", __func__);
       return ncclInvalidUsage;

@@ -8,7 +8,7 @@ import time
 
 from ccld_analyze import (analyze, analyze_completions,
                           analyze_completion_windows, analyze_progress_samples,
-                          analyze_operation_semantics, analyze_p2p_completions,
+                          analyze_operation_semantics,
                           load_records)
 
 def main():
@@ -43,7 +43,6 @@ def main():
         results = analyze(load_records(paths), timeout_ms=args.timeout_ms,
                           slow_skew_ms=args.slow_skew_ms)
         results += analyze_completions(records, slow_rate_ratio=args.slow_rate_ratio)
-        results += analyze_p2p_completions(records)
         results += analyze_operation_semantics(records)
         if args.slow_window:
             results += analyze_completion_windows(
@@ -56,9 +55,8 @@ def main():
             status = result["status"]
             anomaly = status in ("MISMATCH", "MISSING_RANK", "ENQUEUE_SKEW",
                                  "COUNT_MISMATCH", "MISSING_COMPLETION", "COMM_SLOW",
-                                 "COMM_SLOW_WINDOW", "COMM_STALLED", "PEER_DATA_TRUNCATED",
-                                 "PEER_DATA_INCONSISTENT", "P2P_PEER_MISSING",
-                                 "P2P_TRANSFER_MISMATCH", "BROADCAST_ROLE_MISMATCH",
+                                 "COMM_SLOW_WINDOW", "COMM_STALLED",
+                                 "P2P_PEER_MISSING", "P2P_TRANSFER_MISMATCH", "BROADCAST_ROLE_MISMATCH",
                                  "ALLTOALL_RANK_MISSING", "ALLTOALL_SHAPE_MISMATCH",
                                  "COLLECTIVE_SHAPE_MISMATCH", "DIAGNOSTIC_BATCH_DROPPED",
                                  "OBSERVATION_DROPPED")

@@ -20,7 +20,6 @@ export RCCL_CCLD_ENABLE=1
 # Avoid single-rank gtest subcases: RCCL opCount is reused at nranks=1.
 export UT_MIN_GPUS=2
 export RCCL_CCLD_LOG="$workdir/rank-{rank}.jsonl"
-unset RCCL_CCLD_FAULT RCCL_CCLD_FAULT_RANK RCCL_CCLD_FAULT_COUNTER
 
 "$unit_tests" --gtest_filter='AllReduce.OutOfPlace'
 shopt -s nullglob
@@ -55,49 +54,4 @@ python3 "$monitor" --once --all --fail-on-anomaly "${log_files[@]}" \
 grep -q '"status": "OK"' "$workdir/normal-monitor.jsonl"
 grep -Eq '"status": "(OK|TOPOLOGY_PENDING|RING_ASYMMETRY|TREE_ASYMMETRY)"' "$workdir/normal-monitor.jsonl"
 
-run_injected_fault() {
-  local fault=$1 expected=$2 monitor_status
-  local -a injected_logs
-  rm -f "$workdir"/rank-*.jsonl "$workdir/injected-monitor.jsonl"
-  export RCCL_CCLD_FAULT="$fault"
-  export RCCL_CCLD_FAULT_RANK=0
-  export RCCL_CCLD_FAULT_COUNTER=0
-  # The test must still succeed: injection changes diagnostic output only.
-  "$unit_tests" --gtest_filter='AllReduce.OutOfPlace'
-  injected_logs=("$workdir"/rank-*.jsonl)
-  if [[ ${#injected_logs[@]} -eq 0 ]]; then
-    echo "$fault: no rank log files were created" >&2
-    exit 1
-  fi
-  set +e
-  python3 "$monitor" --once --timeout-ms 0 --fail-on-anomaly \
-    "${injected_logs[@]}" > "$workdir/injected-monitor.jsonl"
-  monitor_status=$?
-  set -e
-  if [[ $monitor_status -ne 2 ]]; then
-    cat "$workdir/injected-monitor.jsonl" >&2
-    echo "$fault: expected monitor exit code 2, got $monitor_status" >&2
-    exit 1
-  fi
-  if ! grep -q "\"status\": \"$expected\"" "$workdir/injected-monitor.jsonl"; then
-    cat "$workdir/injected-monitor.jsonl" >&2
-    echo "$fault: expected $expected diagnostic" >&2
-    exit 1
-  fi
-  cat "$workdir/injected-monitor.jsonl"
-}
-
-# Mismatch injections need at least two ranks. The missing-rank injection also
-# works with a one-rank test by altering nranks in diagnostic metadata only.
-if python3 - "${log_files[@]}" <<'PY'
-import json, sys
-records = [json.loads(line) for path in sys.argv[1:] for line in open(path)]
-raise SystemExit(0 if any(int(row.get("nranks", 1)) > 1 for row in records) else 1)
-PY
-then
-  run_injected_fault op_mismatch MISMATCH
-  run_injected_fault size_mismatch MISMATCH
-else
-  echo "SKIP op/size runtime injection: AllReduce test exposed only one rank"
-fi
-run_injected_fault missing_rank MISSING_RANK
+echo "runtime smoke=PASS"

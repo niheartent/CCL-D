@@ -8,40 +8,43 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <limits>
 #include <mutex>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 namespace {
-constexpr int kDefaultCcldDiagSlots = 16;
 std::mutex g_lock;
 std::ofstream g_log;
-std::string g_path;
 std::atomic<bool> g_initialized{false};
 std::unordered_map<const ncclComm*, std::unique_ptr<rccl_ccld::RecordPool>> g_pools;
-struct ParentRecord {
-  const ncclComm* comm = nullptr;
-  uint64_t counter = UINT64_MAX;
-  uint32_t kernelIndex = UINT32_MAX;
-  uint32_t refs = 0;
+struct CompletedEvent { uint64_t counter; uint64_t finishNs; uint64_t finishWallNs; };
+std::unordered_map<const ncclComm*, std::vector<CompletedEvent>> g_completed;
+struct OperationInfo {
+  uint64_t startNs = 0;
+  uint64_t count = 0;
+  uint64_t bytes = 0;
+  int datatype = 0;
+  int root = 0;
+  int algorithm = -1;
+  int protocol = -1;
+  uint64_t opCount = 0;
+  std::string op;
+  std::set<uint16_t> channels;
 };
-thread_local std::vector<ParentRecord> g_parentRecordStack;
+std::unordered_map<const ncclComm*, std::unordered_map<uint64_t, OperationInfo>> g_operations;
 
 bool enabled() {
   const char* value = std::getenv("RCCL_CCLD_ENABLE");
   if (!(value && (std::string(value) == "1" || std::string(value) == "ON" || std::string(value) == "on"))) return false;
   const char* mode = std::getenv("RCCL_CCLD_MODE");
-  if (mode && *mode) {
-    char* end = nullptr;
-    const long parsed = std::strtol(mode, &end, 10);
-    if (end != mode && *end == '\0' && parsed == 0) return false;
-  }
+  if (mode && std::atoi(mode) == 0) return false;
   return true;
 }
 
@@ -56,21 +59,12 @@ void replaceAll(std::string& value, const std::string& token, const std::string&
 std::string rankPath(const char* configured, int rank) {
   std::string path = configured && *configured ? configured : "/tmp/rccl-ccld.jsonl";
   const std::string rankText = std::to_string(rank);
-  const bool hasTemplate = path.find("{rank}") != std::string::npos ||
-                           path.find("${RANK}") != std::string::npos ||
-                           path.find("%r") != std::string::npos;
-  replaceAll(path, "{rank}", rankText);
-  replaceAll(path, "${RANK}", rankText);
-  replaceAll(path, "%r", rankText);
-  if (!hasTemplate) {
-    const size_t slash = path.find_last_of('/');
-    const size_t dot = path.find_last_of('.');
-    const std::string suffix = ".rank" + rankText;
-    if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
-      path.insert(dot, suffix);
-    } else {
-      path += suffix;
-    }
+  const bool templated = path.find("{rank}") != std::string::npos || path.find("${RANK}") != std::string::npos || path.find("%r") != std::string::npos;
+  replaceAll(path, "{rank}", rankText); replaceAll(path, "${RANK}", rankText); replaceAll(path, "%r", rankText);
+  if (!templated) {
+    const size_t slash = path.find_last_of('/'), dot = path.find_last_of('.');
+    if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) path.insert(dot, ".rank" + rankText);
+    else path += ".rank" + rankText;
   }
   return path;
 }
@@ -78,32 +72,18 @@ std::string rankPath(const char* configured, int rank) {
 void init(const ncclComm* comm) {
   if (g_initialized.exchange(true)) return;
   const char* configured = std::getenv("RCCL_CCLD_LOG");
-  g_path = rankPath(configured, comm ? comm->rank : -1);
-  g_log.open(g_path, std::ios::out | std::ios::app);
+  g_log.open(rankPath(configured, comm ? comm->rank : -1), std::ios::out | std::ios::app);
 }
 
 uint64_t nowNs() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count());
 }
-
+uint64_t wallNs() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+}
 const char* safe(const char* value) { return value ? value : ""; }
-
-int envInt(const char* name, int fallback) {
-  const char* value = std::getenv(name);
-  if (!value || !*value) return fallback;
-  char* end = nullptr;
-  const long parsed = std::strtol(value, &end, 10);
-  if (end == value || *end != '\0' || parsed < std::numeric_limits<int>::min() ||
-      parsed > std::numeric_limits<int>::max()) return fallback;
-  return static_cast<int>(parsed);
-}
-
-bool faultSelected(const ncclComm* comm, uint64_t counter) {
-  const int rank = envInt("RCCL_CCLD_FAULT_RANK", 0);
-  const int selectedCounter = envInt("RCCL_CCLD_FAULT_COUNTER", -1);
-  return comm->rank == rank && (selectedCounter < 0 || counter == static_cast<uint64_t>(selectedCounter));
-}
 }
 
 bool rcclCcldEnabled() { return enabled(); }
@@ -111,329 +91,205 @@ bool rcclCcldEnabled() { return enabled(); }
 void rcclCcldRecordEnqueue(struct ncclInfo* info) {
   if (!info || !info->comm || !enabled()) return;
   info->ccldCounter = UINT64_MAX;
-  if (info->comm->nRanks <= 1 || info->count == 0) return;
-  if (!g_parentRecordStack.empty() && g_parentRecordStack.back().comm == info->comm &&
-      g_parentRecordStack.back().counter != UINT64_MAX) {
-    info->ccldCounter = g_parentRecordStack.back().counter;
-    info->ccldKernelIndex = g_parentRecordStack.back().kernelIndex;
-    ++g_parentRecordStack.back().refs;
-    return;
-  }
+  info->ccldKernelIndex = UINT32_MAX;
+  if (info->comm->nRanks <= 1 || info->count == 0 || info->comm->ccldDiagMode == 0) return;
   std::lock_guard<std::mutex> guard(g_lock);
   init(info->comm);
-  if (!g_log) return;
+  if (!g_log || !info->comm->ccldDiag || info->comm->ccldDiagSlots <= 0) return;
   const ncclComm* comm = info->comm;
-  size_t count = info->count;
-  size_t bytes = count * ncclTypeSize(info->datatype);
-  int nranks = comm->nRanks;
-  const char* op = safe(info->opName);
-  auto poolIt = g_pools.find(comm);
-  if (poolIt == g_pools.end()) {
-    const size_t slots = comm->ccldDiagSlots > 0 ? static_cast<size_t>(comm->ccldDiagSlots) : kDefaultCcldDiagSlots;
-    poolIt = g_pools.emplace(comm, std::unique_ptr<rccl_ccld::RecordPool>(new rccl_ccld::RecordPool(slots))).first;
+  auto& pool = g_pools[comm];
+  if (!pool) {
+    const size_t blocks = comm->ccldDiagSlots > 0 ? static_cast<size_t>(comm->ccldDiagSlots) : 1u;
+    pool.reset(new rccl_ccld::RecordPool(blocks));
   }
-  const uint64_t counter = poolIt->second->nextCounter();
+  const uint64_t counter = pool->nextCounter();
+  uint32_t blockIndex = UINT32_MAX;
   info->ccldCounter = counter;
-  const char* fault = std::getenv("RCCL_CCLD_FAULT");
-  const bool inject = fault && faultSelected(comm, counter);
-  if (inject && std::string(fault) == "skip_record") {
-    info->ccldKernelIndex = UINT32_MAX;
+  const uint64_t enqueueNs = nowNs();
+  const uint64_t enqueueWallNs = wallNs();
+  if (!pool->reserve(counter, &blockIndex)) {
+    g_log << "{\"schema\":1,\"phase\":\"enqueue\",\"timestamp_ns\":" << enqueueNs
+          << ",\"timestamp_wall_ns\":" << enqueueWallNs
+          << ",\"trace_id\":\"" << std::hex << comm->commHash << ':' << std::dec << counter
+          << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
+          << "\",\"counter\":" << counter << ",\"op_count\":" << comm->opCount
+          << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
+          << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
+          << ",\"op\":\"" << safe(info->opName) << "\",\"count\":" << info->count
+          << ",\"bytes\":" << info->count * ncclTypeSize(info->datatype)
+          << ",\"datatype\":" << static_cast<int>(info->datatype)
+          << ",\"root\":" << info->root << ",\"host_status\":\"entered\",\"diagnostic_status\":\"OBSERVATION_DROPPED\"}\n";
+    g_log.flush();
     return;
   }
-  uint32_t kernelIndex = UINT32_MAX;
-  const bool reserved = poolIt->second->reserve(counter, 0, &kernelIndex) == rccl_ccld::ReserveResult::Reserved;
-  if (!reserved) kernelIndex = UINT32_MAX;
-  if (reserved) poolIt->second->markRunning(kernelIndex);
-  info->ccldKernelIndex = kernelIndex;
-  if (inject && std::string(fault) == "op_mismatch") op = "CCLD_INJECTED_OP_MISMATCH";
-  if (inject && std::string(fault) == "size_mismatch") {
-    ++count;
-    bytes += ncclTypeSize(info->datatype);
+  auto& operation = g_operations[comm][counter];
+  operation.count = info->count;
+  operation.startNs = enqueueNs;
+  operation.bytes = info->count * ncclTypeSize(info->datatype);
+  operation.datatype = static_cast<int>(info->datatype);
+  operation.root = info->root;
+  operation.opCount = comm->opCount;
+  operation.op = safe(info->opName);
+
+  struct ncclCcldDiag* block = comm->ccldDiag + blockIndex;
+  // Change the generation first so an older in-flight kernel stops recording
+  // before the body is cleared and reused.
+  __atomic_store_n(&block->header.mode, 0ULL, __ATOMIC_RELEASE);
+  __atomic_store_n(&block->header.counter, counter, __ATOMIC_RELEASE);
+  for (int channel = 0; channel < MAXCHANNELS; ++channel) {
+    __atomic_store_n(&block->channels[channel].sendCount, 0ULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&block->channels[channel].recvCount, 0ULL, __ATOMIC_RELAXED);
   }
-  // This test-only mode creates a diagnostic-only missing-rank condition.
-  // The communicator and the collective call itself remain untouched.
-  if (inject && std::string(fault) == "missing_rank") ++nranks;
-  std::ostringstream trace;
-  trace << std::hex << std::setw(16) << std::setfill('0') << comm->commHash
-        << ':' << std::dec << counter;
-  g_log << "{\"schema\":1,\"phase\":\"enqueue\",\"timestamp_ns\":" << nowNs()
-        << ",\"trace_id\":\"" << trace.str()
+  block->header.kernelIndex = blockIndex;
+  block->header.detectChannel = 0;
+  block->header.traceId = rccl_ccld::makeTraceId(comm->commHash, counter);
+  __atomic_store_n(&block->header.mode, static_cast<uint64_t>(comm->ccldDiagMode), __ATOMIC_RELEASE);
+  info->ccldCounter = counter;
+  info->ccldKernelIndex = blockIndex;
+
+  g_log << "{\"schema\":1,\"phase\":\"enqueue\",\"timestamp_ns\":" << operation.startNs
+        << ",\"timestamp_wall_ns\":" << enqueueWallNs
+        << ",\"trace_id\":\"" << std::hex << comm->commHash << ':' << std::dec << counter
         << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
-        << "\",\"counter\":" << counter
-        << ",\"op_count\":" << comm->opCount
-        << ",\"rank\":" << comm->rank << ",\"nranks\":" << nranks
+        << "\",\"counter\":" << counter << ",\"op_count\":" << comm->opCount
+        << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
         << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
-        << ",\"op\":\"" << op << "\",\"count\":" << count
-        << ",\"bytes\":" << bytes << ",\"datatype\":" << static_cast<int>(info->datatype)
-        << ",\"root\":" << info->root
-        << ",\"path_type\":\"" << ((std::string(op) == "Send" || std::string(op) == "Recv") ? "p2p" : "collective")
-        << "\",\"host_status\":\"entered\",\"kernel_index\":";
-  if (kernelIndex == UINT32_MAX) g_log << "null";
-  else g_log << kernelIndex;
-  g_log << ",\"diagnostic_status\":\"" << (reserved ? "RECORDED" : "RESOURCE_EXHAUSTED") << "\"}\n";
+        << ",\"op\":\"" << operation.op << "\",\"count\":" << operation.count
+        << ",\"bytes\":" << operation.bytes << ",\"datatype\":" << operation.datatype
+        << ",\"root\":" << operation.root << ",\"host_status\":\"entered\"}\n";
   g_log.flush();
 }
 
-bool rcclCcldBeginParent(struct ncclInfo* info) {
-  if (!info || !info->comm || !enabled() || !g_parentRecordStack.empty()) return false;
-  rcclCcldRecordEnqueue(info);
-  // Keep the parent identity even when no device slot was available. Otherwise
-  // each expanded AllToAll Send/Recv child would allocate a fresh counter and
-  // shift this rank's TraceID sequence relative to its peers.
-  if (info->ccldCounter == UINT64_MAX) return false;
-  g_parentRecordStack.push_back(ParentRecord{info->comm, info->ccldCounter, info->ccldKernelIndex, 0});
-  return true;
-}
-
-void rcclCcldEndParent() {
-  if (!g_parentRecordStack.empty()) g_parentRecordStack.pop_back();
-}
-
 void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
-                          uint64_t relatedCounter, uint16_t channel) {
-  if (!comm || !enabled() || counter == UINT64_MAX) return;
+                          uint16_t channel, int algorithm, int protocol) {
+  if (!comm || !enabled() || !comm->ccldDiag || channel >= MAXCHANNELS) return;
   std::lock_guard<std::mutex> guard(g_lock);
-  auto it = g_pools.find(comm);
-  if (it == g_pools.end()) return;
+  auto opIt = g_operations.find(comm);
+  if (opIt == g_operations.end()) return;
+  auto it = opIt->second.find(counter);
+  if (it == opIt->second.end()) return;
+  it->second.channels.insert(channel);
+  if (algorithm >= 0) it->second.algorithm = algorithm;
+  if (protocol >= 0) it->second.protocol = protocol;
   uint32_t index = UINT32_MAX;
-  if (it->second->find(counter, &index)) {
-    it->second->registerBody(counter, index, channel);
-  }
-  if (relatedCounter != UINT64_MAX && relatedCounter != counter) {
-    uint32_t relatedIndex = UINT32_MAX;
-    if (it->second->find(relatedCounter, &relatedIndex))
-      it->second->registerBody(relatedCounter, relatedIndex, channel);
-  }
+  auto pool = g_pools.find(comm);
+  if (pool != g_pools.end() && pool->second->find(counter, &index))
+    comm->ccldDiag[index].header.detectChannel = it->second.channels.size();
 }
 
 void rcclCcldRegisterPlanCounter(struct ncclKernelPlan* plan, uint64_t counter) {
   if (!plan || counter == UINT64_MAX || !enabled()) return;
-  for (int i = 0; i < plan->ccldCounterCount; ++i)
-    if (plan->ccldCounters[i] == counter) return;
+  for (int i = 0; i < plan->ccldCounterCount; ++i) if (plan->ccldCounters[i] == counter) return;
   if (plan->ccldCounterCount == plan->ccldCounterCapacity) {
     const int next = plan->ccldCounterCapacity ? plan->ccldCounterCapacity * 2 : 8;
     uint64_t* p = static_cast<uint64_t*>(std::realloc(plan->ccldCounters, sizeof(uint64_t) * next));
-    if (!p) return; // observation is best effort; communication continues
-    plan->ccldCounters = p;
-    plan->ccldCounterCapacity = next;
+    if (!p) return;
+    plan->ccldCounters = p; plan->ccldCounterCapacity = next;
   }
   plan->ccldCounters[plan->ccldCounterCount++] = counter;
 }
 
-void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm,
-                                 const uint64_t* counters, size_t count) {
-  if (!comm || !enabled() || !comm->ccldDiag || !counters || count == 0) return;
-  const int slots = comm->ccldDiagSlots > 0 ? comm->ccldDiagSlots : kDefaultCcldDiagSlots;
-  for (int channel = 0; channel < MAXCHANNELS; ++channel) {
-    for (int slot = 0; slot < slots; ++slot) {
-      struct ncclCcldDiag* diag = comm->ccldDiag + channel * slots + slot;
-      if (__atomic_load_n(&diag->state, __ATOMIC_ACQUIRE) != 1) continue;
-      const uint64_t bodyCounter = __atomic_load_n(&diag->ccldCounter, __ATOMIC_RELAXED);
-      if (rccl_ccld::containsCounter(counters, count, bodyCounter))
-        __atomic_store_n(&diag->state, 2u, __ATOMIC_RELEASE);
+static void writeCompletedDiagnostics(const struct ncclComm* comm, const CompletedEvent* events, size_t count) {
+  if (!comm || !enabled() || !comm->ccldDiag || !events) return;
+  std::lock_guard<std::mutex> guard(g_lock);
+  init(comm);
+  auto pool = g_pools.find(comm);
+  auto ops = g_operations.find(comm);
+  if (pool == g_pools.end() || ops == g_operations.end()) return;
+  for (size_t i = 0; i < count; ++i) {
+    const uint64_t counter = events[i].counter;
+    uint32_t blockIndex = UINT32_MAX;
+    if (!pool->second->find(counter, &blockIndex)) continue;
+    auto opIt = ops->second.find(counter);
+    if (opIt == ops->second.end()) continue;
+    struct ncclCcldDiag* block = comm->ccldDiag + blockIndex;
+    if (block->header.counter != counter || block->header.mode == 0) continue;
+    const uint64_t finishNs = events[i].finishNs;
+    for (uint16_t channel : opIt->second.channels) {
+      const rccl_ccld::ChannelBody& body = block->channels[channel];
+    g_log << "{\"schema\":1,\"phase\":\"complete\",\"timestamp_ns\":" << finishNs
+          << ",\"timestamp_wall_ns\":" << events[i].finishWallNs
+            << ",\"trace_id\":\"" << std::hex << comm->commHash << ':' << std::dec << counter
+            << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
+            << "\",\"counter\":" << counter << ",\"op_count\":" << opIt->second.opCount
+            << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
+            << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
+            << ",\"op\":\"" << opIt->second.op << "\",\"count\":" << opIt->second.count
+            << ",\"bytes\":" << opIt->second.bytes << ",\"datatype\":" << opIt->second.datatype
+            << ",\"root\":" << opIt->second.root << ",\"channel\":" << channel
+            << ",\"algorithm\":" << opIt->second.algorithm
+            << ",\"protocol\":" << opIt->second.protocol
+            << ",\"send_count\":" << body.sendCount << ",\"recv_count\":" << body.recvCount
+            << ",\"start_timestamp\":" << opIt->second.startNs
+            << ",\"end_timestamp\":" << finishNs
+            << ",\"duration_ns\":" << (finishNs - opIt->second.startNs)
+            << ",\"complete\":true";
+      if (opIt->second.algorithm == NCCL_ALGO_TREE) {
+        const ncclTree& tree = comm->channels[channel].tree;
+        g_log << ",\"tree_up\":" << tree.up << ",\"tree_down0\":" << tree.down[0]
+              << ",\"tree_down1\":" << tree.down[1] << ",\"tree_down2\":" << tree.down[2]
+              << ",\"tree_depth\":" << tree.depth;
+      } else if (opIt->second.algorithm == NCCL_ALGO_RING) {
+        const ncclRing& ring = comm->channels[channel].ring;
+        g_log << ",\"ring_prev\":" << ring.prev << ",\"ring_next\":" << ring.next;
+      }
+      g_log << "}\n";
     }
+    g_log.flush();
+    block->header.mode = 0;
+    ops->second.erase(opIt);
+    pool->second->release(counter);
   }
+}
+
+void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm, const uint64_t* counters, size_t count) {
+  if (!comm || !enabled() || !counters || count == 0) return;
+  const uint64_t finish = nowNs();
+  const uint64_t finishWall = wallNs();
+  std::lock_guard<std::mutex> guard(g_lock);
+  std::vector<CompletedEvent>& pending = g_completed[comm];
+  for (size_t i = 0; i < count; ++i)
+    pending.push_back(CompletedEvent{counters[i], finish, finishWall});
+}
+
+void rcclCcldDrainDiagnostics(const struct ncclComm* comm) {
+  if (!comm || !enabled()) return;
+  std::vector<CompletedEvent> pending;
+  {
+    std::lock_guard<std::mutex> guard(g_lock);
+    auto it = g_completed.find(comm);
+    if (it == g_completed.end() || it->second.empty()) return;
+    pending.swap(it->second);
+  }
+  writeCompletedDiagnostics(comm, pending.data(), pending.size());
 }
 
 void rcclCcldForgetComm(const struct ncclComm* comm) {
   if (!comm) return;
   std::lock_guard<std::mutex> guard(g_lock);
-  g_pools.erase(comm);
+  g_pools.erase(comm); g_operations.erase(comm); g_completed.erase(comm);
 }
 
-void rcclCcldRecordDeviceDiag(const struct ncclComm* comm,
-                              const struct ncclCcldDiag* diag) {
-  if (!comm || !diag || !enabled()) return;
-  std::lock_guard<std::mutex> guard(g_lock);
-  init(comm);
-  if (!g_log) {
-    auto poolIt = g_pools.find(comm);
-    if (poolIt != g_pools.end()) {
-      uint32_t index = UINT32_MAX;
-      if (poolIt->second->find(diag->ccldCounter, &index))
-        poolIt->second->consumeBody(diag->ccldCounter, index);
-      if (diag->relatedCcldCounter != UINT64_MAX) {
-        uint32_t relatedIndex = UINT32_MAX;
-        if (poolIt->second->find(diag->relatedCcldCounter, &relatedIndex))
-          poolIt->second->consumeBody(diag->relatedCcldCounter, relatedIndex);
-      }
-    }
-    return;
-  }
-  std::ostringstream traceId;
-  traceId << std::hex << std::setw(16) << std::setfill('0') << comm->commHash
-          << ':' << std::dec << diag->ccldCounter;
-  // Diagnostic-only fault modes make hang/slow handling reproducible inside
-  // the container without touching GPU data movement.  They deliberately
-  // alter only the emitted evidence for a selected rank/counter.
-  const char* fault = std::getenv("RCCL_CCLD_FAULT");
-  const bool inject = fault && faultSelected(comm, diag->ccldCounter);
-  const std::string faultName = fault ? fault : "";
-  bool complete = true;
-  uint64_t startTimestamp = diag->startTimestamp;
-  uint64_t endTimestamp = diag->endTimestamp;
-  if (inject && (faultName == "completion_missing" || faultName == "missing_completion" ||
-                 faultName == "stall" || faultName == "hang")) complete = false;
-  if (inject && faultName == "slow" && endTimestamp > startTimestamp) {
-    const uint64_t duration = endTimestamp - startTimestamp;
-    endTimestamp = startTimestamp + duration * 10;
-  }
-  g_log << "{\"schema\":1,\"phase\":\"complete\",\"timestamp_ns\":" << nowNs()
-        << ",\"trace_id\":\"" << traceId.str()
-        << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
-        << "\",\"counter\":" << diag->ccldCounter
-        << ",\"related_counter\":";
-  if (diag->relatedCcldCounter == UINT64_MAX) g_log << "null";
-  else g_log << diag->relatedCcldCounter;
-  g_log
-        << ",\"dropped_batches\":" << diag->droppedBatches
-        << ",\"op_count\":" << diag->opCount
-        << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
-        << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
-        << ",\"channel\":" << diag->channel
-        << ",\"path_type\":\"" << (diag->algorithm == 255 ? "p2p" : "collective") << "\""
-        << ",\"algorithm\":" << static_cast<int>(diag->algorithm)
-        << ",\"protocol\":" << static_cast<int>(diag->protocol)
-        << ",\"send_count\":" << diag->sendCount
-        << ",\"recv_count\":" << diag->recvCount
-        << ",\"send_count_by_protocol\":[" << diag->sendCountByProto[0] << ","
-        << diag->sendCountByProto[1] << "," << diag->sendCountByProto[2] << "]"
-        << ",\"recv_count_by_protocol\":[" << diag->recvCountByProto[0] << ","
-        << diag->recvCountByProto[1] << "," << diag->recvCountByProto[2] << "]"
-        << ",\"send_peers\":[";
-  for (int i = 0; i < diag->sendPeerCount; ++i) {
-    if (i) g_log << ',';
-    g_log << "{\"peer\":" << diag->sendPeerIds[i]
-          << ",\"bytes\":" << diag->sendBytesByPeer[i] << "}";
-  }
-  g_log << "],\"recv_peers\":[";
-  for (int i = 0; i < diag->recvPeerCount; ++i) {
-    if (i) g_log << ',';
-    g_log << "{\"peer\":" << diag->recvPeerIds[i]
-          << ",\"bytes\":" << diag->recvBytesByPeer[i] << "}";
-  }
-  g_log << "],\"peer_overflow\":" << (diag->peerOverflow ? "true" : "false")
-        << ",\"send_peer_protocol_bytes\":[";
-  for (int proto = 0; proto < 3; ++proto) {
-    if (proto) g_log << ',';
-    g_log << '[';
-    for (int i = 0; i < diag->sendPeerCount; ++i) {
-      if (i) g_log << ',';
-      g_log << diag->sendBytesByProtocolPeer[proto][i];
-    }
-    g_log << ']';
-  }
-  g_log << "],\"recv_peer_protocol_bytes\":[";
-  for (int proto = 0; proto < 3; ++proto) {
-    if (proto) g_log << ',';
-    g_log << '[';
-    for (int i = 0; i < diag->recvPeerCount; ++i) {
-      if (i) g_log << ',';
-      g_log << diag->recvBytesByProtocolPeer[proto][i];
-    }
-    g_log << ']';
-  }
-  g_log << ']'
-        << ",\"start_timestamp\":" << startTimestamp
-        << ",\"end_timestamp\":" << endTimestamp
-        << ",\"complete\":" << (complete ? "true" : "false")
-        << ",\"kernel_status\":\"" << (complete ? "complete" : "hang") << "\"";
-  if (diag->algorithm == NCCL_ALGO_TREE && diag->channel < MAXCHANNELS) {
-    const ncclTree& tree = comm->channels[diag->channel].tree;
-    g_log << ",\"tree_up\":" << tree.up
-          << ",\"tree_down0\":" << tree.down[0]
-          << ",\"tree_down1\":" << tree.down[1]
-          << ",\"tree_down2\":" << tree.down[2]
-          << ",\"tree_depth\":" << tree.depth;
-  } else if (diag->algorithm == NCCL_ALGO_RING && diag->channel < MAXCHANNELS) {
-    const ncclRing& ring = comm->channels[diag->channel].ring;
-    g_log << ",\"ring_prev\":" << ring.prev
-          << ",\"ring_next\":" << ring.next;
-  }
-  g_log << "}\n";
-  g_log.flush();
-  auto poolIt = g_pools.find(comm);
-  if (poolIt != g_pools.end()) {
-    uint32_t index = UINT32_MAX;
-    if (poolIt->second->find(diag->ccldCounter, &index))
-      poolIt->second->consumeBody(diag->ccldCounter, index);
-    if (diag->relatedCcldCounter != UINT64_MAX) {
-      uint32_t relatedIndex = UINT32_MAX;
-      if (poolIt->second->find(diag->relatedCcldCounter, &relatedIndex))
-        poolIt->second->consumeBody(diag->relatedCcldCounter, relatedIndex);
-    }
-  }
-}
-
-void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t opCount,
-                               uint16_t channel, uint64_t sendCount,
-                               uint64_t recvCount, uint64_t timestampNs,
-                               uint64_t sendDelta, uint64_t recvDelta,
-                               uint64_t elapsedNs, bool counterReset) {
+void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t counter, uint16_t channel,
+                               uint64_t sendCount, uint64_t recvCount, uint64_t timestampNs,
+                               uint64_t sendDelta, uint64_t recvDelta, uint64_t elapsedNs,
+                               bool counterReset) {
   if (!comm || !enabled()) return;
-  std::lock_guard<std::mutex> guard(g_lock);
-  init(comm);
-  if (!g_log) return;
-  std::ostringstream traceId;
-  traceId << std::hex << std::setw(16) << std::setfill('0') << comm->commHash
-          << ':' << std::dec << opCount;
+  std::lock_guard<std::mutex> guard(g_lock); init(comm); if (!g_log) return;
   g_log << "{\"schema\":1,\"phase\":\"sample\",\"timestamp_ns\":" << timestampNs
-        << ",\"trace_id\":\"" << traceId.str()
-        << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
-        << "\",\"counter\":" << opCount << ",\"op_count\":" << opCount
-        << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
-        << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
-        << ",\"channel\":" << channel << ",\"send_count\":" << sendCount
-        << ",\"recv_count\":" << recvCount
+        << ",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
+        << "\",\"counter\":" << counter << ",\"rank\":" << comm->rank
+        << ",\"nranks\":" << comm->nRanks << ",\"node\":" << comm->node
+        << ",\"channel\":" << channel
+        << ",\"send_count\":" << sendCount << ",\"recv_count\":" << recvCount
         << ",\"send_delta\":" << sendDelta << ",\"recv_delta\":" << recvDelta
-        << ",\"elapsed_ns\":" << elapsedNs
-        << ",\"counter_reset\":" << (counterReset ? "true" : "false")
-        << ",\"send_rate_Bps\":" << (elapsedNs ? static_cast<uint64_t>(
-              static_cast<long double>(sendDelta) * 1000000000.0L / elapsedNs) : 0)
-        << ",\"recv_rate_Bps\":" << (elapsedNs ? static_cast<uint64_t>(
-              static_cast<long double>(recvDelta) * 1000000000.0L / elapsedNs) : 0)
-        << ",\"state\":\"running\"}\n";
+        << ",\"elapsed_ns\":" << elapsedNs << ",\"counter_reset\":" << (counterReset ? "true" : "false")
+        << ",\"send_rate_Bps\":" << (elapsedNs ? static_cast<uint64_t>(static_cast<long double>(sendDelta) * 1000000000.0L / elapsedNs) : 0)
+        << ",\"recv_rate_Bps\":" << (elapsedNs ? static_cast<uint64_t>(static_cast<long double>(recvDelta) * 1000000000.0L / elapsedNs) : 0)
+        << "}\n";
   g_log.flush();
 }
 
 #ifdef ENABLE_COLLTRACE
-void rcclCcldRecordDevice(const struct ncclComm* comm,
-                          const struct ncclCollTrace* trace,
-                          uint64_t send_count, uint64_t recv_count,
-                          bool complete) {
-  if (!comm || !trace || !enabled()) return;
-  // CCL-D uses the pinned diagnostic body and its completion path. The legacy
-  // collTrace stream has no kernelIndex/TraceID ownership and would emit a
-  // duplicate completion even for RESOURCE_EXHAUSTED work.
-  if (rcclCcldEnabled()) return;
-  std::lock_guard<std::mutex> guard(g_lock);
-  init(comm);
-  if (!g_log) return;
-  const uint64_t counter = trace->opCount;
-  std::ostringstream traceId;
-  traceId << std::hex << std::setw(16) << std::setfill('0') << comm->commHash
-          << ':' << std::dec << counter;
-  g_log << "{\"schema\":1,\"phase\":\"complete\",\"timestamp_ns\":" << nowNs()
-        << ",\"trace_id\":\"" << traceId.str()
-        << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
-        << "\",\"counter\":" << counter
-        << ",\"op_count\":" << counter
-        << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
-        << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
-        << ",\"channel\":" << static_cast<int>(trace->channelId)
-        << ",\"send_count\":" << send_count
-        << ",\"recv_count\":" << recv_count
-        << ",\"topology_kind\":\""
-        << ((trace->type & ncclCollTraceP2pElemType) ? "p2p" : "collective")
-        << "\""
-        << ((trace->type & ncclCollTraceP2pElemType)
-              ? (std::string(",\"send_rank\":") + std::to_string(trace->p2p.sendRank) +
-                 ",\"recv_rank\":" + std::to_string(trace->p2p.recvRank) +
-                 ",\"channel_base\":" + std::to_string(trace->p2p.channelBase) +
-                 ",\"send_channels\":" + std::to_string(trace->p2p.nSendChannels) +
-                 ",\"recv_channels\":" + std::to_string(trace->p2p.nRecvChannels))
-              : std::string())
-        << ",\"complete\":" << (complete ? "true" : "false") << "}\n";
-  g_log.flush();
-}
+void rcclCcldRecordDevice(const struct ncclComm*, const struct ncclCollTrace*, uint64_t, uint64_t, bool) {}
 #endif

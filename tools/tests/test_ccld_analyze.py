@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ccld_analyze import (analyze, analyze_completions,
                           analyze_completion_windows, analyze_progress_samples,
-                          analyze_operation_semantics, analyze_p2p_completions,
+                          analyze_operation_semantics,
                           load_records)
 
 
@@ -68,32 +68,6 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual([row["counter"] for row in results], ["14", "15"])
         self.assertTrue(all(row["status"] == "OK" for row in results))
 
-    def test_p2p_device_completion_uses_host_op_count_association(self):
-        send = record(0, op="Send", counter=70, nranks=2)
-        recv = record(1, op="Recv", counter=71, nranks=2)
-        send.update(root=1, op_count=22)
-        recv.update(root=0, op_count=22)
-        completions = [
-            {"phase": "complete", "comm_id": "abcd", "counter": 70,
-             "rank": 0, "algorithm": 255,
-             "send_peers": [{"peer": 1, "bytes": 128}], "recv_peers": []},
-            {"phase": "complete", "comm_id": "abcd", "counter": 71,
-             "rank": 1, "algorithm": 255,
-             "send_peers": [], "recv_peers": [{"peer": 0, "bytes": 128}]},
-        ]
-        result = analyze_p2p_completions([send, recv, *completions])[0]
-        self.assertEqual(result["status"], "P2P_DEVICE_EVIDENCE")
-        self.assertEqual(result["counter"], "22")
-        self.assertEqual(result["edge_evidence"]["0->1"],
-                         {"send_bytes": 128, "recv_bytes": 128})
-
-    def test_alltoall_device_rows_are_not_reported_as_orphan_p2p(self):
-        enqueue = record(0, op="AllToAll", counter=8, nranks=2)
-        completion = {"phase": "complete", "comm_id": "abcd", "counter": 8,
-                      "rank": 0, "algorithm": 255,
-                      "send_peers": [], "recv_peers": []}
-        self.assertEqual(analyze_p2p_completions([enqueue, completion]), [])
-
     def test_broadcast_root_role_is_checked(self):
         rows = [record(0, op="Broadcast"), record(1, op="Broadcast")]
         rows[0]["root"] = 0
@@ -127,12 +101,15 @@ class CcldAnalyzeTest(unittest.TestCase):
 
     def test_resource_exhaustion_is_observation_loss(self):
         dropped = record(0)
-        dropped["diagnostic_status"] = "RESOURCE_EXHAUSTED"
+        dropped["diagnostic_status"] = "OBSERVATION_DROPPED"
         good = record(1)
         result = analyze([dropped, good])[0]
         self.assertEqual(result["status"], "OBSERVATION_DROPPED")
         self.assertEqual(result["root_cause"], "DIAGNOSTIC_RESOURCE_EXHAUSTED")
         self.assertEqual(result["dropped_ranks"], [0])
+        completion = dict(dropped, phase="complete", send_count=0,
+                          recv_count=0, algorithm=-1, protocol=-1)
+        self.assertEqual(analyze_completions([dropped, completion]), [])
 
     def test_detects_count_and_byte_mismatch(self):
         result = analyze([record(0), record(1, byte_count=2048)])[0]
@@ -182,9 +159,10 @@ class CcldAnalyzeTest(unittest.TestCase):
             with log.open("w", encoding="utf-8") as stream:
                 stream.write(json.dumps(record(0)) + "\n")
                 stream.write('{"phase":"complete","comm_id":"abcd","counter":7,"rank":0,"nranks":1,"send_count":8,"recv_count":8}\n')
+                stream.write('{"phase":"sample","comm_id":"abcd","counter":7,"rank":0,"timestamp_ns":4}\n')
                 stream.write('{"phase":"enqueue"')
             loaded = load_records([log])
-        self.assertEqual(len(loaded), 2)
+        self.assertEqual(len(loaded), 3)
         self.assertEqual(loaded[0]["rank"], 0)
 
     def test_completion_counts_are_aggregated_per_rank(self):
@@ -205,55 +183,15 @@ class CcldAnalyzeTest(unittest.TestCase):
                  "rank": 1, "nranks": 2, "send_count": 4, "recv_count": 8}]
         self.assertEqual(analyze_completions(rows)[0]["status"], "COUNT_MISMATCH")
 
-    def test_completion_aggregates_protocol_counts(self):
-        rows = [{"phase": "complete", "comm_id": "abcd", "counter": 30,
-                 "rank": 0, "nranks": 1, "send_count": 12, "recv_count": 12,
-                 "send_count_by_protocol": [2, 3, 7],
-                 "recv_count_by_protocol": [1, 4, 7], "complete": True}]
-        result = analyze_completions(rows)[0]
-        self.assertEqual(result["send_counts_by_protocol"], [2, 3, 7])
-        self.assertEqual(result["recv_counts_by_protocol"], [1, 4, 7])
-        self.assertEqual(result["per_rank"][0]["send_count_by_protocol"], [2, 3, 7])
-
-    def test_completion_aggregates_peer_bytes(self):
-        rows = [{"phase": "complete", "comm_id": "abcd", "counter": 3,
-                 "rank": 0, "nranks": 2, "channel": 0,
-                 "send_count": 12, "recv_count": 8,
-                 "send_peers": [{"peer": 1, "bytes": 12}],
-                 "recv_peers": [{"peer": 1, "bytes": 8}]}]
-        result = analyze_completions(rows)[0]
-        self.assertEqual(result["send_bytes_by_peer"]["0"]["1"], 12)
-        self.assertEqual(result["recv_bytes_by_peer"]["0"]["1"], 8)
-
-    def test_peer_overflow_is_not_reported_as_clean(self):
+    def test_completion_uses_only_channel_counters(self):
         row = {"phase": "complete", "comm_id": "abcd", "counter": 3,
                "rank": 0, "nranks": 1, "channel": 0,
-               "send_count": 0, "recv_count": 0, "peer_overflow": True}
+               "send_count": 8, "recv_count": 6,
+               "peer_bytes": 999, "protocol_matrix": [1, 2, 3]}
         result = analyze_completions([row])[0]
-        self.assertEqual(result["status"], "PEER_DATA_TRUNCATED")
-        self.assertEqual(result["peer_data_truncated_ranks"], [0])
-
-    def test_diagnostic_batch_drop_is_reported(self):
-        row = {"phase": "complete", "comm_id": "abcd", "counter": 3,
-               "rank": 0, "nranks": 1, "channel": 0,
-               "send_count": 8, "recv_count": 8, "dropped_batches": 2}
-        result = analyze_completions([row])[0]
-        self.assertEqual(result["status"], "DIAGNOSTIC_BATCH_DROPPED")
-        self.assertEqual(result["diagnostic_dropped_ranks"], [0])
-
-    def test_peer_protocol_total_mismatch_is_reported(self):
-        row = {"phase": "complete", "comm_id": "abcd", "counter": 3,
-               "rank": 0, "nranks": 1, "channel": 0,
-               "send_count": 8, "recv_count": 8,
-               "send_count_by_protocol": [8, 0, 0],
-               "recv_count_by_protocol": [8, 0, 0],
-               "send_peers": [{"peer": 1, "bytes": 4}],
-               "recv_peers": [{"peer": 1, "bytes": 4}],
-               "send_peer_protocol_bytes": [[4], [0], [0]],
-               "recv_peer_protocol_bytes": [[4], [0], [0]]}
-        result = analyze_completions([row])[0]
-        self.assertEqual(result["status"], "PEER_DATA_INCONSISTENT")
-        self.assertEqual(result["peer_data_inconsistent_ranks"], [0])
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["per_rank"][0]["send_count"], 8)
+        self.assertNotIn("peer_bytes", result)
 
     def test_incomplete_completion_is_detected(self):
         rows = [{"phase": "complete", "comm_id": "abcd", "counter": 3,
@@ -265,6 +203,16 @@ class CcldAnalyzeTest(unittest.TestCase):
         result = analyze_completions(rows)[0]
         self.assertEqual(result["status"], "MISSING_COMPLETION")
         self.assertEqual(result["incomplete_ranks"], [1])
+
+    def test_enqueue_without_completion_waits_for_timeout(self):
+        row = record(0, nranks=1)
+        row["timestamp_wall_ns"] = 1_000_000_000
+        pending = analyze_completions([row], now_ns=1_500_000_000,
+                                      timeout_ms=1000)[0]
+        self.assertEqual(pending["status"], "PENDING")
+        expired = analyze_completions([row], now_ns=3_000_000_000,
+                                      timeout_ms=1000)[0]
+        self.assertEqual(expired["status"], "MISSING_COMPLETION")
 
     def test_completion_rate_outlier_is_detected(self):
         rows = []
@@ -280,6 +228,16 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual(result["root_cause"], "COMMUNICATION_PROGRESS_SLOW")
         self.assertEqual(result["first_error_rank"], 2)
         self.assertIn("rates", result["evidence"])
+
+    def test_completion_slow_rate_waits_for_both_directions_on_all_ranks(self):
+        rows = []
+        for rank, send, recv in ((0, 0, 1000), (1, 1000, 1000),
+                                 (2, 1000, 1000), (3, 1000, 1000)):
+            rows.append({"phase": "complete", "comm_id": "bcast", "counter": 2,
+                         "rank": rank, "nranks": 4, "op": "Broadcast",
+                         "send_count": send, "recv_count": recv,
+                         "start_timestamp": 0, "end_timestamp": 100})
+        self.assertEqual(analyze_completions(rows)[0]["status"], "OK")
 
     def test_completion_keeps_peer_topology_edges(self):
         rows = [{"phase": "complete", "comm_id": "abcd", "counter": 9,
@@ -454,6 +412,19 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual(result["slow_ranks"], [0])
         self.assertEqual(result["root_cause"], "RANK_PROGRESS_STALLED")
         self.assertEqual(result["stalled_intervals"][0]["progressing_peers"], [1])
+
+    def test_progress_samples_detect_all_ranks_stalled_on_node(self):
+        rows = []
+        for ts in (0, 10, 20, 30):
+            for rank in (0, 1):
+                rows.append({"phase": "sample", "comm_id": "abcd", "counter": 22,
+                             "rank": rank, "node": 0, "nranks": 2,
+                             "timestamp_ns": ts, "channel": 0,
+                             "send_count": 0, "recv_count": 0})
+        result = analyze_progress_samples(rows, stagnant_intervals=3)[0]
+        self.assertEqual(result["status"], "COMM_STALLED")
+        self.assertEqual(result["scope"], "all_ranks")
+        self.assertEqual(result["root_cause"], "ALL_RANKS_NO_PROGRESS")
 
     def test_progress_samples_do_not_compare_different_nodes(self):
         rows = []

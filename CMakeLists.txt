@@ -399,6 +399,7 @@ set(SRC_FILES
   src/channel.cc
   src/include/ccld_diagnostic.h
   src/include/ccld_record_pool.h
+  src/include/ccld_data.h
   src/ccld_diagnostic.cc
   src/collectives.cc
   src/duNcclConfig.cc

@@ -39,10 +39,6 @@ def _root_cause(status, *, ranks=None, missing_ranks=None, incomplete_ranks=None
         cause, confidence, affected = "HOST_ENQUEUE_SKEW", "low", ranks
     elif status == "TOPOLOGY_PENDING":
         cause, confidence, affected = "INSUFFICIENT_TOPOLOGY_EVIDENCE", "low", ranks
-    elif status == "PEER_DATA_TRUNCATED":
-        cause, confidence, affected = "PEER_FLOW_EVIDENCE_TRUNCATED", "low", peer_data_truncated_ranks or ranks
-    elif status == "PEER_DATA_INCONSISTENT":
-        cause, confidence, affected = "PEER_FLOW_EVIDENCE_INCONSISTENT", "low", ranks
     elif status == "OBSERVATION_DROPPED":
         cause, confidence, affected = "DIAGNOSTIC_RESOURCE_EXHAUSTED", "low", ranks
     elif status == "PENDING":
@@ -84,7 +80,7 @@ def load_records(paths):
                         record = json.loads(line)
                     except json.JSONDecodeError:
                         continue  # tolerate a partially written final line
-                    if record.get("phase") in ("enqueue", "complete"):
+                    if record.get("phase") in ("enqueue", "complete", "sample"):
                         records.append(record)
         except FileNotFoundError:
             continue
@@ -103,7 +99,7 @@ def analyze(records, *, now_ns=None, timeout_ms=2000, slow_skew_ms=2):
     results = []
     for (comm_id, counter), rows in sorted(groups.items()):
         dropped = [row for row in rows
-                   if row.get("diagnostic_status") in ("RESOURCE_EXHAUSTED", "OBSERVATION_DROPPED")]
+                   if row.get("diagnostic_status") == "OBSERVATION_DROPPED"]
         if dropped:
             ranks = sorted({int(row.get("rank", -1)) for row in rows})
             dropped_ranks = sorted({int(row.get("rank", -1)) for row in dropped})
@@ -284,7 +280,8 @@ def analyze_operation_semantics(records):
         results.append(result)
     return results
 
-def analyze_completions(records, *, slow_rate_ratio=0.5):
+def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
+                        timeout_ms=2000):
     """Aggregate completion records and detect missing completion/count/rate outliers.
 
     ``start_timestamp`` and ``end_timestamp`` are device clock ticks emitted by
@@ -292,32 +289,64 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
     synchronization is required.  A slow-rate result is advisory and is only
     emitted when every participating rank has a usable duration.
     """
+    now_mono_ns = time.monotonic_ns() if now_ns is None else now_ns
+    now_wall_ns = time.time_ns() if now_ns is None else now_ns
     groups = defaultdict(list)
+    enqueues = defaultdict(list)
+    dropped_keys = {(str(row.get("comm_id", "unknown")),
+                     str(row.get("counter", "unknown")))
+                    for row in records if row.get("phase") == "enqueue" and
+                    row.get("diagnostic_status") == "OBSERVATION_DROPPED"}
     for record in records:
+        if record.get("phase") == "enqueue":
+            key = (str(record.get("comm_id", "unknown")),
+                   str(record.get("counter", "unknown")))
+            if key in dropped_keys:
+                continue
+            if record.get("op") in ("Send", "Recv"):
+                continue
+            enqueues[key].append(record)
+            continue
         # ENABLE_COLLTRACE writes a separate legacy completion-shaped event.
         # It has topology_kind but no CCL-D algorithm/protocol fields and must
         # never be merged with the diagnostic slot completion.
-        if (record.get("phase") != "complete" or
+        if (record.get("phase") != "complete" or record.get("op") in ("Send", "Recv") or
                 ("algorithm" not in record and "topology_kind" in record)):
-            continue
-        # P2P work has separate sendOpCount/recvOpCount and can be present on
-        # only a subset of ranks in a channel batch. Do not treat it as one
-        # rank-synchronous collective completion.
-        if int(record.get("algorithm", -1)) == 255:
             continue
         key = (str(record.get("comm_id", "unknown")),
                str(record.get("counter", "unknown")))
+        if key in dropped_keys:
+            continue
         groups[key].append(record)
+    for key in enqueues:
+        groups.setdefault(key, [])
     results = []
     for (comm_id, counter), rows in sorted(groups.items()):
+        enqueue_rows = enqueues.get((comm_id, counter), [])
+        if not rows:
+            expected = max((int(row.get("nranks", 1)) for row in enqueue_rows), default=1)
+            enqueued = sorted({int(row.get("rank", -1)) for row in enqueue_rows})
+            missing = sorted(set(range(expected)) - set(enqueued))
+            ages = []
+            for row in enqueue_rows:
+                wall = row.get("timestamp_wall_ns")
+                mono = row.get("timestamp_ns")
+                if wall is not None:
+                    ages.append(now_wall_ns - int(wall))
+                elif mono is not None and int(row.get("nnodes", 1)) == 1:
+                    ages.append(now_mono_ns - int(mono))
+            age_ms = max(0, min(ages) / 1_000_000) if ages else 0
+            status = "MISSING_COMPLETION" if age_ms >= timeout_ms else "PENDING"
+            result = {"comm_id": comm_id, "counter": counter, "status": status,
+                      "ranks": enqueued, "expected_ranks": list(range(expected)),
+                      "missing_ranks": missing, "incomplete_ranks": enqueued,
+                      "slow_ranks": [], "records": 0, "age_ms": round(age_ms, 1)}
+            result.update(_root_cause(status, ranks=enqueued,
+                                      missing_ranks=missing,
+                                      incomplete_ranks=enqueued))
+            results.append(result)
+            continue
         by_rank = defaultdict(lambda: {"send_count": 0, "recv_count": 0,
-                                       "send_count_by_protocol": [0, 0, 0],
-                                       "recv_count_by_protocol": [0, 0, 0],
-                                       "send_peers": {}, "recv_peers": {},
-                                       "send_protocol_peers": {}, "recv_protocol_peers": {},
-                                       "peer_overflow": False,
-                                       "dropped_batches": 0,
-                                       "peer_data_inconsistent": [],
                                        "channels": 0, "complete": True,
                                        "start_timestamp": None,
                                        "end_timestamp": None})
@@ -326,46 +355,6 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
             item = by_rank[rank]
             item["send_count"] += int(row.get("send_count", 0))
             item["recv_count"] += int(row.get("recv_count", 0))
-            for field in ("send_count_by_protocol", "recv_count_by_protocol"):
-                values = row.get(field)
-                if isinstance(values, list) and len(values) == 3:
-                    item[field] = [a + int(b) for a, b in zip(item[field], values)]
-            for field in ("send_peers", "recv_peers"):
-                for edge in row.get(field, []) or []:
-                    if not isinstance(edge, dict) or edge.get("peer") is None:
-                        continue
-                    peer = str(int(edge["peer"]))
-                    item[field][peer] = item[field].get(peer, 0) + int(edge.get("bytes", 0))
-            for field, peer_field in (("send_peer_protocol_bytes", "send_peers"),
-                                      ("recv_peer_protocol_bytes", "recv_peers")):
-                matrix = row.get(field)
-                peers = row.get(peer_field) or []
-                if isinstance(matrix, list):
-                    for proto, values in enumerate(matrix[:3]):
-                        proto_key = str(proto)
-                        proto_map = item[field.replace("_peer_protocol_bytes", "_protocol_peers")].setdefault(proto_key, {})
-                        for peer_index, value in enumerate(values or []):
-                            if peer_index >= len(peers):
-                                continue
-                            peer_key = str(int(peers[peer_index]["peer"]))
-                            proto_map[peer_key] = proto_map.get(peer_key, 0) + int(value)
-            item["peer_overflow"] = item["peer_overflow"] or bool(row.get("peer_overflow", False))
-            item["dropped_batches"] += int(row.get("dropped_batches", 0))
-            channel = int(row.get("channel", -1))
-            for field, peer_field, count_field in (
-                    ("send_peer_protocol_bytes", "send_peers", "send_count_by_protocol"),
-                    ("recv_peer_protocol_bytes", "recv_peers", "recv_count_by_protocol")):
-                matrix = row.get(field)
-                counts = row.get(count_field)
-                if not isinstance(matrix, list) or not isinstance(counts, list) or len(matrix) != 3 or len(counts) != 3:
-                    continue
-                observed = [sum(int(x) for x in values or []) for values in matrix]
-                expected = [int(x) for x in counts]
-                if observed != expected:
-                    item["peer_data_inconsistent"].append({
-                        "channel": channel, "direction": field.split("_")[0],
-                        "expected_by_protocol": expected,
-                        "observed_by_protocol": observed})
             item["channels"] += 1
             item["complete"] = item["complete"] and row.get("complete", True) is not False
             start = row.get("start_timestamp")
@@ -376,7 +365,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
             if end is not None:
                 end = int(end)
                 item["end_timestamp"] = end if item["end_timestamp"] is None else max(item["end_timestamp"], end)
-        expected = max((int(row.get("nranks", 1)) for row in rows), default=1)
+        expected = max((int(row.get("nranks", 1)) for row in rows + enqueue_rows), default=1)
         nnodes = max((int(row.get("nnodes", 1)) for row in rows), default=1)
         ranks = sorted(by_rank)
         missing = sorted(set(range(expected)) - set(ranks))
@@ -501,6 +490,11 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
         # different degrees; those require topology-level grouping before a
         # count mismatch can be declared.
         count_mismatch = len(send_values) > 1 or len(recv_values) > 1
+        operations = {str(row.get("op", "")) for row in rows + enqueue_rows}
+        # Broadcast legitimately has a transmitting root and receiving peers;
+        # aggregate send counts therefore differ by rank by design.
+        if operations == {"Broadcast"}:
+            count_mismatch = False
         # Device counters are currently channel aggregates.  Even ring
         # collectives can legitimately produce different per-rank totals
         # (the number of local send/recv edges depends on the selected
@@ -517,57 +511,50 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
             value["duration"] = duration
             value["send_rate"] = (value["send_count"] / duration) if duration else None
             value["recv_rate"] = (value["recv_count"] / duration) if duration else None
-        usable_rates = [v["send_rate"] for v in by_rank.values() if v["send_rate"] is not None and v["send_rate"] > 0]
+        usable_send_rates = [v["send_rate"] for v in by_rank.values()
+                             if v["send_rate"] is not None and v["send_rate"] > 0]
+        usable_recv_rates = [v["recv_rate"] for v in by_rank.values()
+                             if v["recv_rate"] is not None and v["recv_rate"] > 0]
         slow_ranks = []
-        if len(usable_rates) == len(by_rank) and len(usable_rates) >= 2:
-            baseline = sorted(usable_rates)[len(usable_rates) // 2]
+        # A one-way zero can be a valid role/topology property (for example,
+        # the broadcast root). Compare directions independently and diagnose
+        # only when every participating rank has evidence in both directions.
+        if (len(usable_send_rates) == len(by_rank) and
+                len(usable_recv_rates) == len(by_rank) and len(by_rank) >= 2):
+            send_baseline = sorted(usable_send_rates)[len(usable_send_rates) // 2]
+            recv_baseline = sorted(usable_recv_rates)[len(usable_recv_rates) // 2]
             slow_ranks = sorted(rank for rank, value in by_rank.items()
-                                if value["send_rate"] < baseline * slow_rate_ratio)
+                                if value["send_rate"] < send_baseline * slow_rate_ratio or
+                                value["recv_rate"] < recv_baseline * slow_rate_ratio)
         topology_fault = topology_analysis["status"] in ("RING_ASYMMETRY", "TREE_ASYMMETRY")
-        dropped = sorted(rank for rank, value in by_rank.items() if value["dropped_batches"] > 0)
-        status = "DIAGNOSTIC_BATCH_DROPPED" if dropped else (
-            "MISSING_COMPLETION" if missing or incomplete else
+        complete_ranks = set(by_rank)
+        enqueued_ranks = {int(row.get("rank", -1)) for row in enqueue_rows}
+        incomplete.extend(sorted(enqueued_ranks - complete_ranks))
+        incomplete = sorted(set(incomplete))
+        missing_completion = sorted(enqueued_ranks - complete_ranks)
+        missing = sorted(set(missing) | set(missing_completion))
+        status = ("MISSING_COMPLETION" if missing or incomplete else
             "COMM_SLOW" if slow_ranks else
             topology_analysis["status"] if topology_fault else
             "COUNT_MISMATCH" if count_mismatch and not topology_pending else
             "TOPOLOGY_PENDING" if topology_pending else
-            "PEER_DATA_TRUNCATED" if any(v["peer_overflow"] for v in by_rank.values()) else "OK")
-        peer_inconsistent = []
-        peer_inconsistent_channels = {}
-        for rank, value in by_rank.items():
-            if value["peer_data_inconsistent"]:
-                peer_inconsistent.append(rank)
-                peer_inconsistent_channels[str(rank)] = value["peer_data_inconsistent"]
-            peer_send = sum(value["send_peers"].values())
-            peer_recv = sum(value["recv_peers"].values())
-            if peer_send > value["send_count"] or peer_recv > value["recv_count"]:
-                peer_inconsistent.append(rank)
-            for proto, total in enumerate(value["send_count_by_protocol"]):
-                matrix = sum(int(x) for x in value["send_protocol_peers"].get(str(proto), {}).values())
-                if matrix != total and (matrix or total):
-                    peer_inconsistent.append(rank)
-            for proto, total in enumerate(value["recv_count_by_protocol"]):
-                matrix = sum(int(x) for x in value["recv_protocol_peers"].get(str(proto), {}).values())
-                if matrix != total and (matrix or total):
-                    peer_inconsistent.append(rank)
-        if peer_inconsistent and status in ("OK", "TOPOLOGY_PENDING"):
-            status = "PEER_DATA_INCONSISTENT"
+            "OK")
+        if (enqueue_rows and (missing or incomplete) and not incomplete):
+            ages = []
+            for row in enqueue_rows:
+                wall = row.get("timestamp_wall_ns")
+                mono = row.get("timestamp_ns")
+                if wall is not None:
+                    ages.append(now_wall_ns - int(wall))
+                elif mono is not None and int(row.get("nnodes", 1)) == 1:
+                    ages.append(now_mono_ns - int(mono))
+            if not ages or min(ages) / 1_000_000 < timeout_ms:
+                status = "PENDING"
         result = {"comm_id": comm_id, "counter": counter, "status": status,
                         "ranks": ranks, "expected_ranks": list(range(expected)),
                         "missing_ranks": missing, "incomplete_ranks": incomplete,
                         "slow_ranks": slow_ranks, "send_counts": send_values,
                         "recv_counts": recv_values, "per_rank": dict(by_rank),
-                        "send_counts_by_protocol": [sum(v["send_count_by_protocol"][i] for v in by_rank.values()) for i in range(3)],
-                        "recv_counts_by_protocol": [sum(v["recv_count_by_protocol"][i] for v in by_rank.values()) for i in range(3)],
-                        "send_bytes_by_peer": {str(rank): v["send_peers"] for rank, v in by_rank.items()},
-                        "recv_bytes_by_peer": {str(rank): v["recv_peers"] for rank, v in by_rank.items()},
-                        "send_protocol_bytes_by_peer": {str(rank): v["send_protocol_peers"] for rank, v in by_rank.items()},
-                        "recv_protocol_bytes_by_peer": {str(rank): v["recv_protocol_peers"] for rank, v in by_rank.items()},
-                        "peer_data_truncated_ranks": sorted(rank for rank, value in by_rank.items()
-                                                             if value["peer_overflow"]),
-                        "peer_data_inconsistent_ranks": sorted(set(peer_inconsistent)),
-                        "peer_data_inconsistent_channels": peer_inconsistent_channels,
-                        "diagnostic_dropped_ranks": dropped,
                         "op_counts": op_counts,
                         "topology_edges": topology_edges,
                         "topology_groups": topology_groups,
@@ -581,79 +568,8 @@ def analyze_completions(records, *, slow_rate_ratio=0.5):
                                   topology_analysis=topology_analysis,
                                   per_rank=by_rank, send_counts=send_values,
                                   recv_counts=recv_values,
-                                  peer_data_truncated_ranks=result["peer_data_truncated_ranks"]))
+                                  peer_data_truncated_ranks=[]))
         results.append(result)
-    return results
-
-def analyze_p2p_completions(records):
-    """Summarize P2P device peer evidence under its host P2P group.
-
-    Send and Recv API calls have separate TraceIDs. When RCCL groups them into
-    one launch, ``op_count`` is the shared host grouping key; device completion
-    rows can therefore be associated with either API counter without claiming
-    that the counters themselves are equal. AllToAll completions share the
-    parent AllToAll counter and are excluded here because that parent is checked
-    as a collective by ``analyze_operation_semantics``.
-    """
-    enqueue_by_counter = {}
-    p2p_groups = defaultdict(list)
-    for row in records:
-        if row.get("phase") != "enqueue":
-            continue
-        comm_id = str(row.get("comm_id", "unknown"))
-        counter = str(row.get("counter", "unknown"))
-        enqueue_by_counter[(comm_id, counter, int(row.get("rank", -1)))] = row
-        if row.get("op") in ("Send", "Recv"):
-            group_id = str(row.get("op_count", counter))
-            p2p_groups[(comm_id, group_id)].append(row)
-    groups = defaultdict(list)
-    for row in records:
-        if row.get("phase") != "complete" or row.get("algorithm") != 255:
-            continue
-        comm_id = str(row.get("comm_id", "unknown"))
-        rank = int(row.get("rank", -1))
-        counter = str(row.get("counter", "unknown"))
-        enqueue = enqueue_by_counter.get((comm_id, counter, rank))
-        related = row.get("related_counter")
-        related_enqueue = (enqueue_by_counter.get((comm_id, str(related), rank))
-                           if related is not None else None)
-        owners = [item for item in (enqueue, related_enqueue)
-                  if item is not None and item.get("op") in ("Send", "Recv")]
-        if not owners:
-            # Device records belonging to AllToAll are already represented by
-            # its parent TraceID; ignore those instead of calling them orphaned.
-            if enqueue and enqueue.get("op") in ("AllToAll", "AllToAllPivot"):
-                continue
-            groups[(comm_id, "unassociated")].append(row)
-            continue
-        group_ids = {str(item.get("op_count", item.get("counter", "unknown")))
-                     for item in owners}
-        for group_id in group_ids:
-            groups[(comm_id, group_id)].append(row)
-    results = []
-    for (comm_id, group_id), rows in sorted(groups.items()):
-        if group_id == "unassociated":
-            status = "P2P_COMPLETION_UNCORRELATED"
-        else:
-            status = "P2P_DEVICE_EVIDENCE"
-        edges = defaultdict(lambda: {"send_bytes": 0, "recv_bytes": 0})
-        ranks = set()
-        for row in rows:
-            rank = int(row.get("rank", -1)); ranks.add(rank)
-            for field, direction, peer_field in (("send_peers", "send_bytes", "peer"),
-                                                  ("recv_peers", "recv_bytes", "peer")):
-                for item in row.get(field, []) or []:
-                    edge = (rank, int(item[peer_field])) if direction == "send_bytes" else (int(item[peer_field]), rank)
-                    edges[edge][direction] += int(item.get("bytes", 0))
-        results.append({"comm_id": comm_id, "counter": group_id,
-                        "status": status,
-                        "root_cause": "NONE" if status == "P2P_DEVICE_EVIDENCE" else "P2P_COMPLETION_NEEDS_HOST_ASSOCIATION",
-                        "confidence": "medium" if status == "P2P_DEVICE_EVIDENCE" else "low",
-                        "first_error_rank": None,
-                        "ranks": sorted(ranks), "records": len(rows),
-                        "edge_evidence": {f"{a}->{b}": value for (a, b), value in sorted(edges.items())},
-                        "evidence": {"association": "host op_count",
-                                     "reason": "directional send/recv counters remain separate"}})
     return results
 
 def analyze_completion_windows(records, *, window_size=5, slow_rate_ratio=0.5,
@@ -729,19 +645,38 @@ def analyze_progress_samples(records, *, stagnant_intervals=3):
     """
     if stagnant_intervals < 2:
         raise ValueError("stagnant_intervals must be at least 2")
+    completed = {(str(row.get("comm_id", "unknown")),
+                  str(row.get("counter", "unknown")))
+                 for row in records if row.get("phase") == "complete"}
+    completed.update((str(row.get("comm_id", "unknown")),
+                      str(row.get("counter", "unknown")))
+                     for row in records if row.get("phase") == "enqueue" and
+                     row.get("diagnostic_status") == "OBSERVATION_DROPPED")
     groups = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
+    expected_by_node = defaultdict(int)
     for row in records:
         if row.get("phase") != "sample" or row.get("timestamp_ns") is None:
             continue
         node = int(row.get("node", -1))
         rank = int(row.get("rank", -1))
         channel = int(row.get("channel", -1))
+        key = (str(row.get("comm_id", "unknown")),
+               str(row.get("counter", "unknown")))
+        if key in completed:
+            continue
         ts = int(row["timestamp_ns"])
+        expected_by_node[(str(row.get("comm_id", "unknown")),
+                          str(row.get("counter", "unknown")), node)] = max(
+                              expected_by_node[(str(row.get("comm_id", "unknown")),
+                                                 str(row.get("counter", "unknown")), node)],
+                              int(row.get("nranks", 1)), rank + 1)
         bucket = groups[(str(row.get("comm_id", "unknown")),
                          str(row.get("counter", "unknown")))][node][rank][channel]
-        item = bucket.setdefault(ts, {"send_count": 0, "recv_count": 0})
+        item = bucket.setdefault(ts, {"send_count": 0, "recv_count": 0,
+                                      "counter_reset": False})
         item["send_count"] += int(row.get("send_count", 0))
         item["recv_count"] += int(row.get("recv_count", 0))
+        item["counter_reset"] = item["counter_reset"] or bool(row.get("counter_reset", False))
 
     results = []
     for (comm_id, counter), nodes in sorted(groups.items()):
@@ -772,21 +707,32 @@ def analyze_progress_samples(records, *, stagnant_intervals=3):
                         if any(t1 >= start and t0 <= end and (send > 0 or recv > 0)
                                for t0, t1, send, recv in peer_intervals):
                             peer_progress.append(peer)
-                    if peer_progress:
+                    observed_ranks = {peer for peer, peer_channel in totals
+                                      if peer_channel == channel}
+                    expected = expected_by_node[(comm_id, counter, node)]
+                    if peer_progress or (expected > 1 and len(observed_ranks) == expected):
                         stalled.append({"rank": rank, "node": node,
                                         "channel": channel,
                                         "start_ns": start, "end_ns": end,
                                         "intervals": stagnant_intervals,
                                         "duration_ms": round((end - start) / 1_000_000, 3),
-                                        "progressing_peers": sorted(peer_progress)})
+                                        "progressing_peers": sorted(peer_progress),
+                                        "node_ranks_observed": len(observed_ranks),
+                                        "expected_ranks": expected})
                         break
         if stalled:
             slow_ranks = sorted({item["rank"] for item in stalled})
+            all_ranks_stalled = bool(expected_by_node) and all(
+                len({item["rank"] for item in stalled if item["node"] == node}) == expected
+                for (comm, trace, node), expected in expected_by_node.items()
+                if comm == comm_id and trace == counter and expected > 1)
             result = {"comm_id": comm_id, "counter": counter,
                       "status": "COMM_STALLED", "slow_ranks": slow_ranks,
-                      "stalled_intervals": stalled}
+                      "stalled_intervals": stalled,
+                      "scope": "all_ranks" if all_ranks_stalled else "rank_progress"}
             result.update(_root_cause("COMM_STALLED", slow_ranks=slow_ranks))
-            result["root_cause"] = "RANK_PROGRESS_STALLED"
+            result["root_cause"] = ("ALL_RANKS_NO_PROGRESS" if all_ranks_stalled
+                                    else "RANK_PROGRESS_STALLED")
             result["evidence"]["stalled_intervals"] = stalled
             results.append(result)
     return results

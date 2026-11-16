@@ -190,13 +190,6 @@ ncclResult_t ncclAllToAll_impl(const void* sendbuff, void* recvbuff, size_t coun
     int nRanks;
     NCCLCHECK(ncclCommCount(comm, &nRanks));
     if (count == 0) return ncclSuccess;
-    struct ncclInfo ccldParentInfo = {};
-    ccldParentInfo.opName = "AllToAll";
-    ccldParentInfo.count = count;
-    ccldParentInfo.datatype = datatype;
-    ccldParentInfo.comm = comm;
-    ccldParentInfo.root = 0;
-    ncclCcldParentScope ccldParentScope(&ccldParentInfo);
     NCCLCHECK(ncclGroupStart());
     pushParentP2p(P2pAllToAll);
     for (int r=0; r<nRanks; r++) {

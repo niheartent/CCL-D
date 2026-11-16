@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 SIM="$ROOT/tools/tests/simulate_ccld_device_fault.py"
 MON="$ROOT/tools/ccld_monitor.py"
-OUT=${CCLD_SIM_DIR:-$ROOT/ccld-artifacts/fault-simulation-$(date -u +%Y%m%dT%H%M%SZ)}
+OUT=${CCLD_SIM_DIR:-$ROOT/rccl-artifacts/fault-simulation-$(date -u +%Y%m%dT%H%M%SZ)}
 mkdir -p "$OUT"
 run_case() {
   local name=$1 fault=$2 expected=$3
@@ -17,7 +17,7 @@ run_case() {
   if ! grep -q "\"status\": \"$expected\"" "$OUT/$name.monitor.jsonl"; then cat "$OUT/$name.monitor.jsonl" >&2; return 1; fi
   echo "$name: PASS ($expected)"
 }
-run_case stall stall COUNT_MISMATCH
-run_case slow slow COUNT_MISMATCH
+run_case stall stall MISSING_COMPLETION
+run_case slow slow COMM_SLOW
 run_case missing missing MISSING_COMPLETION
 echo "fault_simulation_matrix=PASS dir=$OUT"

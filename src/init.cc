@@ -249,6 +249,7 @@ void *ncclCommThreadMain(void *arg) {
   std::vector<uint64_t> lastCcldSampleNs(MAXCHANNELS * ccldSlots, 0);
   std::vector<uint64_t> lastCcldSend(MAXCHANNELS * ccldSlots, 0);
   std::vector<uint64_t> lastCcldRecv(MAXCHANNELS * ccldSlots, 0);
+  std::vector<uint64_t> lastCcldCounter(MAXCHANNELS * ccldSlots, UINT64_MAX);
   const uint64_t sampleIntervalNs = static_cast<uint64_t>(
       std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCcldSampleUs()))) * 1000ULL;
   const useconds_t samplePollUs = static_cast<useconds_t>(
@@ -264,78 +265,37 @@ void *ncclCommThreadMain(void *arg) {
       head[channel] = tail - COLLTRACE_NUM_ITEMS;
   }
   do {
+    rcclCcldDrainDiagnostics(comm);
     if (comm->ccldDiag != nullptr) {
       const uint64_t sampleNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
-      for (int channel = 0; channel < MAXCHANNELS; channel++) {
-        for (int slot = 0; slot < ccldSlots; slot++) {
-        const int diagIndex = channel * ccldSlots + slot;
-        volatile struct ncclCcldDiag* diag = comm->ccldDiag + diagIndex;
-        const uint32_t state = __atomic_load_n(&diag->state, __ATOMIC_ACQUIRE);
-        if (state == 1) {
-          if (sampleNs - lastCcldSampleNs[diagIndex] >= sampleIntervalNs) {
-            const uint64_t ccldCounter = __atomic_load_n(&diag->ccldCounter, __ATOMIC_RELAXED);
-            const uint64_t sends = __atomic_load_n(&diag->sendCount, __ATOMIC_RELAXED);
-            const uint64_t recvs = __atomic_load_n(&diag->recvCount, __ATOMIC_RELAXED);
-            const bool reset = lastCcldSampleNs[diagIndex] != 0 &&
-                               (sends < lastCcldSend[diagIndex] || recvs < lastCcldRecv[diagIndex]);
-            const uint64_t elapsed = lastCcldSampleNs[diagIndex] ?
-                sampleNs - lastCcldSampleNs[diagIndex] : 0;
-            const uint64_t sendDelta = reset || !lastCcldSampleNs[diagIndex] ? 0 : sends - lastCcldSend[diagIndex];
-            const uint64_t recvDelta = reset || !lastCcldSampleNs[diagIndex] ? 0 : recvs - lastCcldRecv[diagIndex];
-            rcclCcldRecordDeviceSample(comm, ccldCounter, channel, sends, recvs, sampleNs,
-                                       sendDelta, recvDelta, elapsed, reset);
-            lastCcldSampleNs[diagIndex] = sampleNs;
-            lastCcldSend[diagIndex] = sends;
-            lastCcldRecv[diagIndex] = recvs;
+      for (int block = 0; block < ccldSlots; ++block) {
+        volatile struct ncclCcldDiag* diag = comm->ccldDiag + block;
+        const uint64_t mode = __atomic_load_n(&diag->header.mode, __ATOMIC_ACQUIRE);
+        if (mode == 0) continue;
+        const uint64_t counter = __atomic_load_n(&diag->header.counter, __ATOMIC_RELAXED);
+        for (int channel = 0; channel < MAXCHANNELS; ++channel) {
+          const int index = block * MAXCHANNELS + channel;
+          volatile rccl_ccld::ChannelBody* body = &diag->channels[channel];
+          const uint64_t sends = __atomic_load_n(&body->sendCount, __ATOMIC_RELAXED);
+          const uint64_t recvs = __atomic_load_n(&body->recvCount, __ATOMIC_RELAXED);
+          if (lastCcldCounter[index] != counter) {
+            lastCcldCounter[index] = counter;
+            lastCcldSampleNs[index] = 0;
+            lastCcldSend[index] = 0;
+            lastCcldRecv[index] = 0;
           }
-        } else if (state == 2) {
-          struct ncclCcldDiag snapshot;
-          snapshot.opCount = __atomic_load_n(&diag->opCount, __ATOMIC_RELAXED);
-          snapshot.ccldCounter = __atomic_load_n(&diag->ccldCounter, __ATOMIC_RELAXED);
-          snapshot.relatedCcldCounter = __atomic_load_n(&diag->relatedCcldCounter, __ATOMIC_RELAXED);
-          snapshot.droppedBatches = __atomic_load_n(&diag->droppedBatches, __ATOMIC_RELAXED);
-          snapshot.sendCount = __atomic_load_n(&diag->sendCount, __ATOMIC_RELAXED);
-          snapshot.recvCount = __atomic_load_n(&diag->recvCount, __ATOMIC_RELAXED);
-          for (int proto = 0; proto < 3; ++proto) {
-            snapshot.sendCountByProto[proto] = __atomic_load_n(&diag->sendCountByProto[proto], __ATOMIC_RELAXED);
-            snapshot.recvCountByProto[proto] = __atomic_load_n(&diag->recvCountByProto[proto], __ATOMIC_RELAXED);
-          }
-          snapshot.sendPeerCount = diag->sendPeerCount;
-          snapshot.recvPeerCount = diag->recvPeerCount;
-          snapshot.peerOverflow = diag->peerOverflow;
-          snapshot.activeSendPeerCount = 0;
-          snapshot.activeRecvPeerCount = 0;
-          for (int peer = 0; peer < CCLD_MAX_PEER_SLOTS; ++peer) {
-            snapshot.sendPeerIds[peer] = diag->sendPeerIds[peer];
-            snapshot.recvPeerIds[peer] = diag->recvPeerIds[peer];
-            snapshot.activeSendSlots[peer] = 0xff;
-            snapshot.activeRecvSlots[peer] = 0xff;
-            snapshot.sendBytesByPeer[peer] = __atomic_load_n(&diag->sendBytesByPeer[peer], __ATOMIC_RELAXED);
-            snapshot.recvBytesByPeer[peer] = __atomic_load_n(&diag->recvBytesByPeer[peer], __ATOMIC_RELAXED);
-            for (int proto = 0; proto < 3; ++proto) {
-              snapshot.sendBytesByProtocolPeer[proto][peer] = __atomic_load_n(&diag->sendBytesByProtocolPeer[proto][peer], __ATOMIC_RELAXED);
-              snapshot.recvBytesByProtocolPeer[proto][peer] = __atomic_load_n(&diag->recvBytesByProtocolPeer[proto][peer], __ATOMIC_RELAXED);
-            }
-          }
-          snapshot.startTimestamp = __atomic_load_n(&diag->startTimestamp, __ATOMIC_RELAXED);
-          snapshot.endTimestamp = __atomic_load_n(&diag->endTimestamp, __ATOMIC_RELAXED);
-          snapshot.state = state;
-          snapshot.channel = __atomic_load_n(&diag->channel, __ATOMIC_RELAXED);
-          snapshot.funcIndex = __atomic_load_n(&diag->funcIndex, __ATOMIC_RELAXED);
-          snapshot.algorithm = __atomic_load_n(&diag->algorithm, __ATOMIC_RELAXED);
-          snapshot.protocol = __atomic_load_n(&diag->protocol, __ATOMIC_RELAXED);
-          snapshot.treeUp = __atomic_load_n(&diag->treeUp, __ATOMIC_RELAXED);
-          for (int i = 0; i < 3; ++i)
-            snapshot.treeDown[i] = __atomic_load_n(&diag->treeDown[i], __ATOMIC_RELAXED);
-          snapshot.treeDepth = __atomic_load_n(&diag->treeDepth, __ATOMIC_RELAXED);
-          // Release the device-visible body before freeing its LRU index.
-          __atomic_store_n(&diag->state, 0u, __ATOMIC_RELEASE);
-          lastCcldSampleNs[diagIndex] = 0;
-          lastCcldSend[diagIndex] = 0;
-          lastCcldRecv[diagIndex] = 0;
-          rcclCcldRecordDeviceDiag(comm, &snapshot);
-        }
+          if (sampleNs - lastCcldSampleNs[index] < sampleIntervalNs) continue;
+          const bool reset = lastCcldSampleNs[index] != 0 &&
+                             (sends < lastCcldSend[index] || recvs < lastCcldRecv[index]);
+          const uint64_t elapsed = lastCcldSampleNs[index] ? sampleNs - lastCcldSampleNs[index] : 0;
+          const uint64_t sendDelta = reset || !lastCcldSampleNs[index] ? 0 : sends - lastCcldSend[index];
+          const uint64_t recvDelta = reset || !lastCcldSampleNs[index] ? 0 : recvs - lastCcldRecv[index];
+          rcclCcldRecordDeviceSample(comm, counter, channel, sends, recvs, sampleNs,
+                                     sendDelta, recvDelta, elapsed, reset);
+          lastCcldSampleNs[index] = sampleNs;
+          lastCcldSend[index] = sends;
+          lastCcldRecv[index] = recvs;
         }
       }
     }
@@ -517,6 +477,8 @@ static ncclResult_t commFree(ncclComm_t comm) {
     else
       ncclCommThreadMain((void *)comm);
   }
+  rcclCcldDrainDiagnostics(comm);
+  rcclCcldForgetComm(comm);
   NCCLCHECK(ncclCudaFree((void *)comm->collTrace));
   NCCLCHECK(ncclCudaFree((void *)comm->collTraceTail));
 #endif
@@ -713,7 +675,7 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
   int ccldMode = rcclParamCcldDiagMode();
   if (ccldMode < 0 || ccldMode > 2) ccldMode = 1;
   comm->ccldDiagMode = ccldMode;
-  NCCLCHECK(ncclCudaHostCalloc(&comm->ccldDiag, MAXCHANNELS * comm->ccldDiagSlots));
+  NCCLCHECK(ncclCudaHostCalloc(&comm->ccldDiag, comm->ccldDiagSlots));
   ncclCommPushCudaHostFree(comm, comm->ccldDiag);
   comm->collTraceExit = 0;
   comm->collTraceEnabled = false; // we can enable colltrace without starting a thread
@@ -2819,8 +2781,6 @@ ncclResult_t ncclCommDestroy_impl(ncclComm_t comm) {
   NCCLCHECKGOTO(ncclCalloc(&job, 1), res, fail);
   job->comm = comm;
   NCCLCHECKGOTO(ncclAsyncLaunch(&job->base, commReclaim, NULL, free, comm), res, fail);
-  rcclCcldForgetComm(comm);
-
 exit:
   return res;
 fail:
