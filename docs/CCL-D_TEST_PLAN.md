@@ -6,7 +6,7 @@
 
 覆盖多 plan/work/channel、AllToAll 父子 P2P、重复完成、缺失完成和 communicator 销毁。
 
-通过条件：TraceID 不串操作；所有 body 只收口一次；无 body 的 work 不产生 completion；通信不因观测资源不足阻塞。
+通过条件：TraceID 不串操作；flush callback 只处理本次 plan 集合；所有 body 只收口一次；无 body 的 work 不产生 completion；通信不因观测资源不足阻塞。
 
 ## 协议计数
 

@@ -25,6 +25,7 @@
 #include "ccld_diagnostic.h"
 #include <cstring> // std::memcpy
 #include <cinttypes> // PRIx64
+#include <cstdlib>
 
 struct ncclKernelMatch {
   void* kernelFn;
@@ -186,8 +187,12 @@ static void addWorkBatchToPlan(
     plan->nWorkBatches += 1;
   }
   batch->offsetBitset |= 1ull<<(offset/workSize);
-  if (rcclCcldEnabled() && ccldKernelIndex != UINT32_MAX)
+  if (rcclCcldEnabled() && ccldKernelIndex != UINT32_MAX) {
     rcclCcldRegisterBody(comm, ccldCounter, relatedCcldCounter, channelId);
+    rcclCcldRegisterPlanCounter(plan, ccldCounter);
+    if (relatedCcldCounter != UINT64_MAX)
+      rcclCcldRegisterPlanCounter(plan, relatedCcldCounter);
+  }
   chan->wipBatch.workBytes += workSize;
   if (workType == ncclDevWorkTypeP2p) {
     // We need to ensure that a single batch doesn't have multiple p2p's
@@ -1395,17 +1400,38 @@ static ncclResult_t reclaimPlan(struct ncclComm* comm, struct ncclCommCallback* 
     }
     NCCLCHECK(result);
   }
+  std::free(plan->ccldCounters);
+  plan->ccldCounters = nullptr;
+  plan->ccldCounterCount = plan->ccldCounterCapacity = 0;
   ncclMemoryPoolFree(&comm->memPool_ncclKernelPlan, plan);
   return ncclSuccess;
 }
 
-static void HIPRT_CB ccldFinalizeCallback(void* comm_) {
-  rcclCcldFinalizeDiagnostics((struct ncclComm*)comm_);
+struct CcldFinalizeContext {
+  struct ncclComm* comm;
+  size_t count;
+  bool persistent;
+  uint64_t counters[1];
+};
+
+static void releaseCcldFinalizeContext(CcldFinalizeContext* context) {
+  if (!context || context->persistent) return;
+  std::free(context);
+}
+
+static void HIPRT_CB ccldFinalizeCallback(void* context_) {
+  CcldFinalizeContext* context = static_cast<CcldFinalizeContext*>(context_);
+  rcclCcldFinalizeDiagnostics(context->comm, context->counters, context->count);
+  // A captured graph replays the same host node repeatedly. Its context lives
+  // with the graph and is released by persistentDestructor instead.
+  releaseCcldFinalizeContext(context);
 }
 
 static void persistentDestructor(void* plans_) {
   struct ncclKernelPlan* plan = (struct ncclKernelPlan*)plans_;
   struct ncclComm* comm = plan->comm;
+  std::free(plan->ccldFinalizeContext);
+  plan->ccldFinalizeContext = nullptr;
   while (plan != nullptr) {
     struct ncclKernelPlan* next = plan->next;
     ncclIntruQueueMpscEnqueue(&comm->callbackQueue, &plan->reclaimer);
@@ -1430,6 +1456,9 @@ ncclResult_t ncclLaunchPrepare(struct ncclComm* comm) {
 
       struct ncclKernelPlan* plan = ncclMemoryPoolAlloc<struct ncclKernelPlan>(&comm->memPool_ncclKernelPlan, &comm->memPermanent);
       plan->comm = comm;
+      plan->ccldCounters = nullptr;
+      plan->ccldCounterCount = plan->ccldCounterCapacity = 0;
+      plan->ccldFinalizeContext = nullptr;
       plan->reclaimer.fn = reclaimPlan;
       plan->persistent = persistent;
       // uploadWork() promotes ncclDevWorkStorageType[Fifo|Buf]->Args if the work can fit.
@@ -1636,6 +1665,7 @@ ncclResult_t ncclLaunchFinish(struct ncclComm* comm) {
   bool persistent = ncclCudaGraphValid(planner->capturingGraph);
 
   if (!ncclIntruQueueEmpty(&planner->planQueue)) {
+    struct ncclKernelPlan* flushPlans = ncclIntruQueueHead(&planner->planQueue);
     // Reset queue to empty without destroying plans since those will be sent
     // back to us for reclaiming via callbackQueue.
     ncclIntruQueueConstruct(&planner->planQueue);
@@ -1665,19 +1695,36 @@ ncclResult_t ncclLaunchFinish(struct ncclComm* comm) {
     if (rcclCcldEnabled()) {
       // The callback is ordered after every plan in this planner flush. Keep
       // each channel body accumulating until this operation-level boundary.
-      result = ncclStrongStreamAcquire(planner->capturingGraph, &comm->sharedRes->hostStream);
-      if (result == ncclSuccess) {
+      size_t totalCounters = 0;
+      for (struct ncclKernelPlan* p = flushPlans; p != nullptr; p = p->next)
+        totalCounters += static_cast<size_t>(p->ccldCounterCount);
+      CcldFinalizeContext* context = nullptr;
+      if (totalCounters != 0) {
+        context = static_cast<CcldFinalizeContext*>(std::malloc(sizeof(CcldFinalizeContext) + (totalCounters - 1) * sizeof(uint64_t)));
+        if (context) {
+          context->comm = comm;
+          context->count = totalCounters;
+          context->persistent = persistent;
+          size_t at = 0;
+          for (struct ncclKernelPlan* p = flushPlans; p != nullptr; p = p->next)
+            for (int i = 0; i < p->ccldCounterCount; ++i) context->counters[at++] = p->ccldCounters[i];
+          if (persistent) flushPlans->ccldFinalizeContext = context;
+        }
+      }
+      if (context) result = ncclStrongStreamAcquire(planner->capturingGraph, &comm->sharedRes->hostStream);
+      if (context && result == ncclSuccess) {
         result = ncclStrongStreamWaitStream(planner->capturingGraph,
                                             &comm->sharedRes->hostStream,
                                             launchStream);
         if (result == ncclSuccess)
           result = ncclStrongStreamLaunchHost(planner->capturingGraph,
                                               &comm->sharedRes->hostStream,
-                                              ccldFinalizeCallback, comm);
+                                              ccldFinalizeCallback, context);
         ncclResult_t releaseResult = ncclStrongStreamRelease(
             planner->capturingGraph, &comm->sharedRes->hostStream);
         if (result == ncclSuccess) result = releaseResult;
       }
+      if (context && result != ncclSuccess) releaseCcldFinalizeContext(context);
     }
   }
   return result;

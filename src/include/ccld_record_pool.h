@@ -10,6 +10,12 @@
 
 namespace rccl_ccld {
 
+inline bool containsCounter(const uint64_t* counters, size_t count, uint64_t counter) {
+  for (size_t i = 0; i < count; ++i)
+    if (counters[i] == counter) return true;
+  return false;
+}
+
 enum class RecordState : uint8_t {
   Free,
   Reserved,

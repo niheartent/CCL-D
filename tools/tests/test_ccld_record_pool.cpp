@@ -8,6 +8,11 @@ using rccl_ccld::RecordState;
 using rccl_ccld::ReserveResult;
 
 int main() {
+  const uint64_t flushCounters[] = {41, 43, 47};
+  assert(rccl_ccld::containsCounter(flushCounters, 3, 43));
+  assert(!rccl_ccld::containsCounter(flushCounters, 3, 42));
+  assert(!rccl_ccld::containsCounter(nullptr, 0, 41));
+
   RecordPool pool(2);
   uint32_t a = UINT32_MAX, b = UINT32_MAX, c = UINT32_MAX;
 

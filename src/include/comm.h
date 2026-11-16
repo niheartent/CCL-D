@@ -211,6 +211,14 @@ struct ncclKernelPlan {
   struct ncclIntruQueue<struct ncclCommCallback, &ncclCommCallback::next> cleanupQueue;
   void* workBufPersistent;
 
+  // Host-owned TraceIDs carried by this plan.  The launch-finish callback
+  // uses this bounded list to finalize only the bodies belonging to the
+  // current planner flush instead of scanning the communicator globally.
+  uint64_t* ccldCounters;
+  int ccldCounterCount;
+  int ccldCounterCapacity;
+  void* ccldFinalizeContext;
+
   struct ncclIntruQueue<struct ncclProxyOp, &ncclProxyOp::enqNext> proxyOpQueue;
 };
 

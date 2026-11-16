@@ -204,13 +204,30 @@ void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
   }
 }
 
-void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm) {
-  if (!comm || !enabled() || !comm->ccldDiag) return;
+void rcclCcldRegisterPlanCounter(struct ncclKernelPlan* plan, uint64_t counter) {
+  if (!plan || counter == UINT64_MAX || !enabled()) return;
+  for (int i = 0; i < plan->ccldCounterCount; ++i)
+    if (plan->ccldCounters[i] == counter) return;
+  if (plan->ccldCounterCount == plan->ccldCounterCapacity) {
+    const int next = plan->ccldCounterCapacity ? plan->ccldCounterCapacity * 2 : 8;
+    uint64_t* p = static_cast<uint64_t*>(std::realloc(plan->ccldCounters, sizeof(uint64_t) * next));
+    if (!p) return; // observation is best effort; communication continues
+    plan->ccldCounters = p;
+    plan->ccldCounterCapacity = next;
+  }
+  plan->ccldCounters[plan->ccldCounterCount++] = counter;
+}
+
+void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm,
+                                 const uint64_t* counters, size_t count) {
+  if (!comm || !enabled() || !comm->ccldDiag || !counters || count == 0) return;
   const int slots = comm->ccldDiagSlots > 0 ? comm->ccldDiagSlots : kDefaultCcldDiagSlots;
   for (int channel = 0; channel < MAXCHANNELS; ++channel) {
     for (int slot = 0; slot < slots; ++slot) {
       struct ncclCcldDiag* diag = comm->ccldDiag + channel * slots + slot;
-      if (__atomic_load_n(&diag->state, __ATOMIC_ACQUIRE) == 1)
+      if (__atomic_load_n(&diag->state, __ATOMIC_ACQUIRE) != 1) continue;
+      const uint64_t bodyCounter = __atomic_load_n(&diag->ccldCounter, __ATOMIC_RELAXED);
+      if (rccl_ccld::containsCounter(counters, count, bodyCounter))
         __atomic_store_n(&diag->state, 2u, __ATOMIC_RELEASE);
     }
   }

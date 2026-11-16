@@ -15,6 +15,7 @@
 | LRU 容量配置 | `RCCL_CCLD_SLOTS` 运行时配置，无需重编译 |
 | 采样与统计模式 | `RCCL_CCLD_SAMPLE_US`、`RCCL_CCLD_MODE` 运行时配置 |
 | 资源耗尽语义 | 无 body 的 work 不阻塞通信、不写伪 completion，monitor 可报告观测丢失 |
+| plan 定向收口 | 每个 kernel plan 保存实际使用的 TraceID；flush host callback 只 finalize 本次 plan 集合，plan 回收释放集合 |
 | Simple/LL/LL128 插桩入口 | 已按材料放置 send/recv 计数点，待专项数值验收 |
 | analyzer/monitor 基础规则 | 参数、缺 rank、P2P、AllToAll、Ring/Tree 和合成 slow/stall 测试通过 |
 | Python 与 record pool 单测 | 48 项 Python 测试和 record pool 单测通过 |
@@ -32,7 +33,7 @@
 
 ## 尚需验收的内容
 
-1. 跨多个 RCCL plan 的同一用户操作，验证 TraceID/body 在真实拆分场景下只收口一次。
+1. 在真实跨多个 RCCL plan 的同一用户操作上验收定向 callback：同一 TraceID 的多 channel body 只收口一次，plan 之间不串 TraceID。
 2. Simple、LL、LL128 在已知消息规模下的逐协议计数数值核对，分别验证 mode 1 和 mode 2。
 3. Tree 算法真实双节点长期回归，以及 Ring/Tree 首错 rank 的 slow/hang 判定。
 4. 多 communicator、多 stream、HIP graph 和 communicator 销毁过程中的 body 回收。

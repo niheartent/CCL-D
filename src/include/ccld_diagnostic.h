@@ -2,12 +2,14 @@
 #define RCCL_CCLD_DIAGNOSTIC_H_
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 struct ncclInfo;
 struct ncclComm;
 struct ncclInfo;
 struct ncclCcldDiag;
+struct ncclKernelPlan;
 #ifdef ENABLE_COLLTRACE
 struct ncclCollTrace;
 #endif
@@ -17,7 +19,9 @@ struct ncclCollTrace;
 void rcclCcldRecordEnqueue(struct ncclInfo* info);
 void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
                           uint64_t relatedCounter, uint16_t channel);
-void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm);
+void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm,
+                                 const uint64_t* counters, size_t count);
+void rcclCcldRegisterPlanCounter(struct ncclKernelPlan* plan, uint64_t counter);
 bool rcclCcldBeginParent(struct ncclInfo* info);
 void rcclCcldEndParent();
 
