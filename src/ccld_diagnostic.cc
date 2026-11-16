@@ -35,7 +35,14 @@ thread_local std::vector<ParentRecord> g_parentRecordStack;
 
 bool enabled() {
   const char* value = std::getenv("RCCL_CCLD_ENABLE");
-  return value && (std::string(value) == "1" || std::string(value) == "ON" || std::string(value) == "on");
+  if (!(value && (std::string(value) == "1" || std::string(value) == "ON" || std::string(value) == "on"))) return false;
+  const char* mode = std::getenv("RCCL_CCLD_MODE");
+  if (mode && *mode) {
+    char* end = nullptr;
+    const long parsed = std::strtol(mode, &end, 10);
+    if (end != mode && *end == '\0' && parsed == 0) return false;
+  }
+  return true;
 }
 
 void replaceAll(std::string& value, const std::string& token, const std::string& replacement) {
@@ -165,11 +172,15 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
   g_log.flush();
 }
 
-void rcclCcldBeginParent(struct ncclInfo* info) {
-  if (!info || !info->comm || !enabled() || !g_parentRecordStack.empty()) return;
+bool rcclCcldBeginParent(struct ncclInfo* info) {
+  if (!info || !info->comm || !enabled() || !g_parentRecordStack.empty()) return false;
   rcclCcldRecordEnqueue(info);
-  if (info->ccldCounter == UINT64_MAX || info->ccldKernelIndex == UINT32_MAX) return;
+  // Keep the parent identity even when no device slot was available. Otherwise
+  // each expanded AllToAll Send/Recv child would allocate a fresh counter and
+  // shift this rank's TraceID sequence relative to its peers.
+  if (info->ccldCounter == UINT64_MAX) return false;
   g_parentRecordStack.push_back(ParentRecord{info->comm, info->ccldCounter, info->ccldKernelIndex, 0});
+  return true;
 }
 
 void rcclCcldEndParent() {

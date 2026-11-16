@@ -19,7 +19,7 @@
 | 项目 | 当前状态 | 验收缺口 |
 |---|---|---|
 | 操作级 TraceID 与 `kernelIndex` | host 已分配并传入 collective/P2P work | 跨多个 plan/work/channel 的唯一归属尚未证明 |
-| pinned body 与 slot 回收 | 容量已支持运行时配置 `RCCL_CCLD_SLOTS`，诊断线程消费后释放 | 默认 16-slot 在 20 轮测试出现资源耗尽；较大容量通过有限轮次，真实生命周期闭环仍未验收 |
+| pinned body 与 slot 回收 | slot 容量、200 微秒采样周期和统计 mode 均已支持运行时配置 | 默认 16-slot 在 20 轮测试出现资源耗尽；较大容量通过有限轮次，真实生命周期闭环仍未验收 |
 | AllToAll 父操作 | 已接入单轮路径 | 多 plan、长轮次仍需验证 |
 | Ring/Tree 分析 | Ring 基础规则已验收，Tree 有规则 | 真实 Tree 多节点长期回归未完成 |
 

@@ -613,6 +613,7 @@ struct ncclComm {
   union ncclCollTraceTail *collTraceTail;
   struct ncclCcldDiag* ccldDiag;
   int ccldDiagSlots;
+  int ccldDiagMode;
   pthread_t collTraceThread;
   volatile bool collTraceExit;
   bool collTraceEnabled;

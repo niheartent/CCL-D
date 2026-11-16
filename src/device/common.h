@@ -91,7 +91,7 @@
     } \
   } while (0)
   #define CCLD_DIAG_ADD(SEND, RECV) do { \
-    if (tid == 0 && ncclShmem.ccldDiagActive) { \
+    if ((ncclShmem.comm.ccldDiagMode == 2 || tid == 0) && ncclShmem.ccldDiagActive) { \
       if ((SEND) != 0) __atomic_fetch_add(&ncclShmem.collTraceTail->diag.sendCount, (uint64_t)(SEND), __ATOMIC_RELAXED); \
       if ((RECV) != 0) __atomic_fetch_add(&ncclShmem.collTraceTail->diag.recvCount, (uint64_t)(RECV), __ATOMIC_RELAXED); \
       if (ncclShmem.ccldDiagActive) { \
@@ -648,6 +648,7 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
       const uint32_t diagState = ccld ? __atomic_load_n(&ccld->state, __ATOMIC_ACQUIRE) : 0;
       const bool sameOperation = ccld && ccld->ccldCounter == batchCcldCounter;
       ncclShmem.ccldDiagActive = ccld != nullptr &&
+          ncclShmem.comm.ccldDiagMode != 0 &&
           ((diagState == 0) || (diagState == 1 && sameOperation));
       if (ncclShmem.ccldDiagActive) {
         if (diagState == 0) {

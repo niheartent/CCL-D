@@ -43,6 +43,8 @@ def _root_cause(status, *, ranks=None, missing_ranks=None, incomplete_ranks=None
         cause, confidence, affected = "PEER_FLOW_EVIDENCE_TRUNCATED", "low", peer_data_truncated_ranks or ranks
     elif status == "PEER_DATA_INCONSISTENT":
         cause, confidence, affected = "PEER_FLOW_EVIDENCE_INCONSISTENT", "low", ranks
+    elif status == "OBSERVATION_DROPPED":
+        cause, confidence, affected = "DIAGNOSTIC_RESOURCE_EXHAUSTED", "low", ranks
     elif status == "PENDING":
         cause, confidence, affected = "WAITING_FOR_RANK_RECORDS", "low", missing_ranks
     else:
@@ -100,6 +102,36 @@ def analyze(records, *, now_ns=None, timeout_ms=2000, slow_skew_ms=2):
 
     results = []
     for (comm_id, counter), rows in sorted(groups.items()):
+        dropped = [row for row in rows
+                   if row.get("diagnostic_status") in ("RESOURCE_EXHAUSTED", "OBSERVATION_DROPPED")]
+        if dropped:
+            ranks = sorted({int(row.get("rank", -1)) for row in rows})
+            dropped_ranks = sorted({int(row.get("rank", -1)) for row in dropped})
+            expected = max((int(row.get("nranks", 1)) for row in rows), default=1)
+            missing = sorted(set(range(expected)) - set(ranks))
+            p2p_rows = all(str(row.get("op", "")) in ("Send", "Recv") for row in rows)
+            compare_fields = ("datatype",) if p2p_rows else FIELDS
+            mismatches = {field: sorted({str(row.get(field)) for row in rows})
+                          for field in compare_fields
+                          if len({str(row.get(field)) for row in rows}) > 1}
+            if mismatches:
+                status = "MISMATCH"
+            elif missing:
+                status = "PENDING"
+            else:
+                status = "OBSERVATION_DROPPED"
+            result = {"comm_id": comm_id, "counter": counter,
+                      "trace_id": rows[0].get("trace_id"),
+                      "status": status, "ranks": ranks,
+                      "expected_ranks": list(range(expected)),
+                      "missing_ranks": missing, "mismatches": mismatches,
+                      "nnodes": max((int(row.get("nnodes", 1)) for row in rows), default=1),
+                      "records": len(rows), "p2p": bool(p2p_rows),
+                      "dropped_ranks": dropped_ranks}
+            result.update(_root_cause(status, ranks=dropped_ranks if status == "OBSERVATION_DROPPED" else ranks,
+                                      missing_ranks=missing, mismatches=mismatches))
+            results.append(result)
+            continue
         ranks = sorted({int(row.get("rank", -1)) for row in rows})
         expected = max((int(row.get("nranks", 1)) for row in rows), default=1)
         nnodes = max((int(row.get("nnodes", 1)) for row in rows), default=1)

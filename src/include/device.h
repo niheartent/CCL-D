@@ -558,6 +558,7 @@ struct ncclDevComm {
   union ncclCollTraceTail *collTraceTail;
   struct ncclCcldDiag* ccldDiag;
   int ccldDiagSlots;
+  int ccldDiagMode;
   pthread_t collTraceThread;
 #endif
 

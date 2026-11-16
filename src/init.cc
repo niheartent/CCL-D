@@ -236,8 +236,9 @@ void NCCL_NO_OPTIMIZE commPoison(ncclComm_t comm) {
 
 RCCL_PARAM(KernelCollTraceEnable, "KERNEL_COLL_TRACE_ENABLE", 0);
 RCCL_PARAM(KernelCollTraceThreadEnable, "KERNEL_COLL_TRACE_THREAD_ENABLE", 0);
-RCCL_PARAM(KernelCollTraceSampleMs, "CCLD_SAMPLE_MS", 10);
+RCCL_PARAM(CcldSampleUs, "CCLD_SAMPLE_US", 200);
 RCCL_PARAM(CcldDiagSlots, "CCLD_SLOTS", 16);
+RCCL_PARAM(CcldDiagMode, "CCLD_MODE", 1);
 
 #ifdef ENABLE_COLLTRACE
 // Should be in sync with 'ALL_COLLS' in Generator.cmake
@@ -249,7 +250,9 @@ void *ncclCommThreadMain(void *arg) {
   std::vector<uint64_t> lastCcldSend(MAXCHANNELS * ccldSlots, 0);
   std::vector<uint64_t> lastCcldRecv(MAXCHANNELS * ccldSlots, 0);
   const uint64_t sampleIntervalNs = static_cast<uint64_t>(
-      std::min<int64_t>(60000, std::max<int64_t>(1, rcclParamKernelCollTraceSampleMs()))) * 1000000ULL;
+      std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCcldSampleUs()))) * 1000ULL;
+  const useconds_t samplePollUs = static_cast<useconds_t>(
+      std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCcldSampleUs())));
   double vega_gpu_rtc_freq;
 
   vega_gpu_rtc_freq = GetDeviceWallClockRateInKhz(comm->cudaDev) * 1.0E3;
@@ -407,7 +410,7 @@ void *ncclCommThreadMain(void *arg) {
     }
     if (comm->collTraceExit && numActiveChans == 0)
       break;
-    usleep(1000); //sleep 1ms
+    usleep(samplePollUs);
   } while(true);
   if (comm->collTraceThread)
     pthread_exit(NULL);
@@ -707,6 +710,9 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
   // The value is runtime-configurable; allocation failure follows RCCL's
   // normal initialization error path.
   comm->ccldDiagSlots = ccldSlots;
+  int ccldMode = rcclParamCcldDiagMode();
+  if (ccldMode < 0 || ccldMode > 2) ccldMode = 1;
+  comm->ccldDiagMode = ccldMode;
   NCCLCHECK(ncclCudaHostCalloc(&comm->ccldDiag, MAXCHANNELS * comm->ccldDiagSlots));
   ncclCommPushCudaHostFree(comm, comm->ccldDiag);
   comm->collTraceExit = 0;
@@ -863,6 +869,7 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   tmpCommAndChans.comm.collTraceTail = comm->collTraceTail;
   tmpCommAndChans.comm.ccldDiag = comm->ccldDiag;
   tmpCommAndChans.comm.ccldDiagSlots = comm->ccldDiagSlots;
+  tmpCommAndChans.comm.ccldDiagMode = comm->ccldDiagMode;
   tmpCommAndChans.comm.collTraceThread = comm->collTraceThread;
 #endif
 

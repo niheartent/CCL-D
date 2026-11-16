@@ -60,7 +60,8 @@ def main():
                                  "PEER_DATA_INCONSISTENT", "P2P_PEER_MISSING",
                                  "P2P_TRANSFER_MISMATCH", "BROADCAST_ROLE_MISMATCH",
                                  "ALLTOALL_RANK_MISSING", "ALLTOALL_SHAPE_MISMATCH",
-                                 "COLLECTIVE_SHAPE_MISMATCH", "DIAGNOSTIC_BATCH_DROPPED")
+                                 "COLLECTIVE_SHAPE_MISMATCH", "DIAGNOSTIC_BATCH_DROPPED",
+                                 "OBSERVATION_DROPPED")
             if args.strict_topology and status in ("RING_ASYMMETRY", "TREE_ASYMMETRY"):
                 anomaly = True
             if anomaly:

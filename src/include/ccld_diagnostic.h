@@ -18,15 +18,17 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info);
 void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
                           uint64_t relatedCounter, uint16_t channel);
 void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm);
-void rcclCcldBeginParent(struct ncclInfo* info);
+bool rcclCcldBeginParent(struct ncclInfo* info);
 void rcclCcldEndParent();
 
 class ncclCcldParentScope {
  public:
-  explicit ncclCcldParentScope(struct ncclInfo* info) { rcclCcldBeginParent(info); }
-  ~ncclCcldParentScope() { rcclCcldEndParent(); }
+  explicit ncclCcldParentScope(struct ncclInfo* info) : active_(rcclCcldBeginParent(info)) {}
+  ~ncclCcldParentScope() { if (active_) rcclCcldEndParent(); }
   ncclCcldParentScope(const ncclCcldParentScope&) = delete;
   ncclCcldParentScope& operator=(const ncclCcldParentScope&) = delete;
+ private:
+  bool active_;
 };
 bool rcclCcldEnabled();
 

@@ -125,6 +125,15 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual(result["root_cause"], "PARAMETER_MISMATCH")
         self.assertEqual(result["confidence"], "high")
 
+    def test_resource_exhaustion_is_observation_loss(self):
+        dropped = record(0)
+        dropped["diagnostic_status"] = "RESOURCE_EXHAUSTED"
+        good = record(1)
+        result = analyze([dropped, good])[0]
+        self.assertEqual(result["status"], "OBSERVATION_DROPPED")
+        self.assertEqual(result["root_cause"], "DIAGNOSTIC_RESOURCE_EXHAUSTED")
+        self.assertEqual(result["dropped_ranks"], [0])
+
     def test_detects_count_and_byte_mismatch(self):
         result = analyze([record(0), record(1, byte_count=2048)])[0]
         self.assertEqual(result["status"], "MISMATCH")
