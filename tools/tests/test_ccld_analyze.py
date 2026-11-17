@@ -337,7 +337,7 @@ class CcldAnalyzeTest(unittest.TestCase):
         result = analyze_completions(rows)[0]
         self.assertEqual(result["topology_analysis"]["status"], "TREE_LEVEL_PENDING")
 
-    def test_tree_topology_compares_rates_by_level(self):
+    def test_tree_topology_reconstructs_rank_levels_from_peers(self):
         rows = []
         topology = [(0, -1, 1, 2, -1, 0, 800),
                     (1, 0, 3, -1, -1, 1, 800),
@@ -348,8 +348,19 @@ class CcldAnalyzeTest(unittest.TestCase):
                          "rank": rank, "nranks": 4, "algorithm": 0,
                          "send_count": count, "recv_count": count,
                          "tree_up": up, "tree_down0": d0,
-                         "tree_down1": d1, "tree_down2": d2, "tree_depth": depth,
+                         "tree_down1": d1, "tree_down2": d2, "tree_depth": 4,
                          "channel": 0, "start_timestamp": 0, "end_timestamp": 4})
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["topology_analysis"]["status"], "TREE_SYMMETRIC")
+        self.assertEqual(sorted({item["depth"] for item in result["topology_analysis"]["channel_depths"]}), [0, 1, 2])
+
+    def test_tree_topology_detects_broken_parent_child_link(self):
+        rows = [{"phase": "complete", "comm_id": "abcd", "counter": 15,
+                 "rank": rank, "nranks": 3, "algorithm": 0, "channel": 0,
+                 "send_count": 8, "recv_count": 8, "tree_up": up,
+                 "tree_down0": down, "tree_down1": -1, "tree_down2": -1,
+                 "tree_depth": 3}
+                for rank, up, down in ((0, -1, 2), (1, 0, -1), (2, 1, -1))]
         result = analyze_completions(rows)[0]
         self.assertEqual(result["topology_analysis"]["status"], "TREE_ASYMMETRY")
 
@@ -422,6 +433,23 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual(result["slow_ranks"], [0])
         self.assertEqual(result["root_cause"], "RANK_PROGRESS_STALLED")
         self.assertEqual(result["stalled_intervals"][0]["progressing_peers"], [1])
+
+    def test_progress_samples_identify_zero_progress_rank_when_peer_progress_precedes_sampling(self):
+        rows = []
+        for ts in (0, 10, 20, 30):
+            rows.extend([
+                {"phase": "sample", "comm_id": "early", "counter": 1,
+                 "rank": 0, "node": 0, "local_rank": 0, "local_ranks": 2,
+                 "timestamp_ns": ts, "channel": 0,
+                 "send_count": 100, "recv_count": 100},
+                {"phase": "sample", "comm_id": "early", "counter": 1,
+                 "rank": 1, "node": 0, "local_rank": 1, "local_ranks": 2,
+                 "timestamp_ns": ts, "channel": 0,
+                 "send_count": 0, "recv_count": 0},
+            ])
+        result = analyze_progress_samples(rows, stagnant_intervals=3)[0]
+        self.assertEqual(result["slow_ranks"], [1])
+        self.assertEqual(result["root_cause"], "RANK_PROGRESS_STALLED")
 
     def test_progress_samples_detect_all_ranks_stalled_on_node(self):
         rows = []

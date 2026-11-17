@@ -470,22 +470,71 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
                 topology_analysis = {"status": "TREE_LEVEL_PENDING",
                                      "reason": "completion records lack tree peers or depth"}
             else:
-                by_level = defaultdict(list)
+                # RCCL may export a kernel-wide tree depth value rather than
+                # the logical level of each rank. Reconstruct levels from the
+                # parent/children edges whenever the exported value is equal
+                # for all ranks.
+                tree_by_channel = defaultdict(dict)
                 for row in tree_rows:
-                    start, end = row.get("start_timestamp"), row.get("end_timestamp")
-                    duration = int(end) - int(start) if start is not None and end is not None else 0
-                    if duration > 0 and int(row.get("send_count", 0)) > 0:
-                        key = (int(row.get("channel", -1)), int(row["tree_depth"]))
-                        by_level[key].append(int(row["send_count"]) / duration)
+                    channel = int(row.get("channel", -1))
+                    tree_by_channel[channel][int(row["rank"])] = row
+                derived_depth = {}
+                for channel, channel_rows in tree_by_channel.items():
+                    if len({int(r["tree_depth"]) for r in channel_rows.values()}) == 1:
+                        roots = [rank for rank, row in channel_rows.items()
+                                 if int(row["tree_up"]) < 0]
+                        if len(roots) == 1:
+                            levels = {roots[0]: 0}
+                            queue = [roots[0]]
+                            while queue:
+                                parent = queue.pop(0)
+                                for field in ("tree_down0", "tree_down1", "tree_down2"):
+                                    child = int(channel_rows[parent][field])
+                                    if child >= 0 and child not in levels and child in channel_rows:
+                                        levels[child] = levels[parent] + 1
+                                        queue.append(child)
+                            if len(levels) == len(channel_rows):
+                                derived_depth[channel] = levels
+                by_level = defaultdict(list)
                 asymmetric = []
-                for (channel, depth), rates in by_level.items():
-                    if len(rates) >= 2 and min(rates) > 0 and max(rates) / min(rates) >= 2:
-                        asymmetric.append({"channel": channel, "depth": depth})
+                for channel, channel_rows in tree_by_channel.items():
+                    rank_rows = {int(rank): row for rank, row in channel_rows.items()}
+                    roots = [rank for rank, row in rank_rows.items() if int(row["tree_up"]) < 0]
+                    children = {rank: tuple(int(row[field]) for field in
+                                ("tree_down0", "tree_down1", "tree_down2")
+                                if int(row[field]) >= 0) for rank, row in rank_rows.items()}
+                    invalid = len(roots) != 1
+                    for rank, row in rank_rows.items():
+                        parent = int(row["tree_up"])
+                        if parent >= 0 and (parent not in rank_rows or rank not in children.get(parent, ())):
+                            invalid = True
+                        for child in children[rank]:
+                            if child not in rank_rows or int(rank_rows[child]["tree_up"]) != rank:
+                                invalid = True
+                    levels = derived_depth.get(channel)
+                    if levels is None:
+                        levels = {rank: int(row["tree_depth"]) for rank, row in rank_rows.items()}
+                    elif len(levels) != len(rank_rows):
+                        invalid = True
+                    if invalid:
+                        asymmetric.append(channel)
+                    for rank, row in rank_rows.items():
+                        depth = levels.get(rank, int(row["tree_depth"]))
+                        role = (int(int(row["tree_up"]) >= 0), len(children[rank]))
+                        start, end = row.get("start_timestamp"), row.get("end_timestamp")
+                        duration = int(end) - int(start) if start is not None and end is not None else 0
+                        if duration > 0:
+                            by_level[(channel, depth, role)].append({
+                                "rank": rank,
+                                "send_rate": int(row.get("send_count", 0)) / duration,
+                                "recv_rate": int(row.get("recv_count", 0)) / duration})
                 topology_analysis = {"status": "TREE_ASYMMETRY" if asymmetric else "TREE_SYMMETRIC",
                                      "channel_depths": [
-                                         {"channel": c, "depth": d, "ranks": len(rates)}
-                                         for (c, d), rates in sorted(by_level.items())],
-                                     "asymmetric_levels": asymmetric}
+                                         {"channel": c, "depth": d, "parent": role[0],
+                                          "children": role[1], "ranks": len(members)}
+                                         for (c, d, role), members in sorted(by_level.items())],
+                                     "asymmetric_channels": sorted(asymmetric),
+                                     "asymmetric_levels": []}
         # Ring ranks have symmetric degree. Tree and CollNet ranks may have
         # different degrees; those require topology-level grouping before a
         # count mismatch can be declared.
@@ -519,7 +568,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
         # A one-way zero can be a valid role/topology property (for example,
         # the broadcast root). Compare directions independently and diagnose
         # only when every participating rank has evidence in both directions.
-        if (len(usable_send_rates) == len(by_rank) and
+        if not tree_rows and (len(usable_send_rates) == len(by_rank) and
                 len(usable_recv_rates) == len(by_rank) and len(by_rank) >= 2):
             send_baseline = sorted(usable_send_rates)[len(usable_send_rates) // 2]
             recv_baseline = sorted(usable_recv_rates)[len(usable_recv_rates) // 2]
@@ -682,8 +731,10 @@ def analyze_progress_samples(records, *, stagnant_intervals=3):
     results = []
     for (comm_id, counter), nodes in sorted(groups.items()):
         stalled = []
+        progress_by_node_rank = defaultdict(bool)
         for node, ranks in nodes.items():
             totals = {}
+            made_progress = {}
             for rank, channels in ranks.items():
                 for channel, samples in channels.items():
                     points = sorted(samples.items())
@@ -695,6 +746,13 @@ def analyze_progress_samples(records, *, stagnant_intervals=3):
                                           second["send_count"] - first["send_count"],
                                           second["recv_count"] - first["recv_count"]))
                     totals[(rank, channel)] = intervals
+                    started_with_progress = bool(points and (
+                        points[0][1].get("send_count", 0) > 0 or
+                        points[0][1].get("recv_count", 0) > 0))
+                    made_progress[(rank, channel)] = started_with_progress or any(
+                        send > 0 or recv > 0 for _, _, send, recv in intervals)
+                    progress_by_node_rank[(node, rank)] = (
+                        progress_by_node_rank[(node, rank)] or made_progress[(rank, channel)])
             for (rank, channel), intervals in totals.items():
                 for offset in range(0, len(intervals) - stagnant_intervals + 1):
                     window = intervals[offset:offset + stagnant_intervals]
@@ -705,8 +763,9 @@ def analyze_progress_samples(records, *, stagnant_intervals=3):
                     for (peer, peer_channel), peer_intervals in totals.items():
                         if peer == rank or peer_channel != channel:
                             continue
-                        if any(t1 >= start and t0 <= end and (send > 0 or recv > 0)
-                               for t0, t1, send, recv in peer_intervals):
+                        if made_progress[(peer, peer_channel)] or any(
+                                t1 >= start and t0 <= end and (send > 0 or recv > 0)
+                                for t0, t1, send, recv in peer_intervals):
                             peer_progress.append(peer)
                     observed_ranks = {peer for peer, peer_channel in totals
                                       if peer_channel == channel}
@@ -722,9 +781,18 @@ def analyze_progress_samples(records, *, stagnant_intervals=3):
                                         "expected_ranks": expected})
                         break
         if stalled:
+            # Prefer ranks that made no progress at all while local peers did.
+            # Ranks that progressed and later waited at a collective boundary
+            # are participants in the stall, not necessarily its source.
+            no_progress = [item for item in stalled
+                           if not progress_by_node_rank[(item["node"], item["rank"])] ]
+            if no_progress:
+                stalled = no_progress
             slow_ranks = sorted({item["rank"] for item in stalled})
             all_ranks_stalled = bool(expected_by_node) and all(
-                len({item["rank"] for item in stalled if item["node"] == node}) == expected
+                len(nodes.get(node, {})) == expected and
+                all(not progress_by_node_rank[(node, rank)]
+                    for rank in nodes.get(node, {}))
                 for (comm, trace, node), expected in expected_by_node.items()
                 if comm == comm_id and trace == counter and expected > 1)
             result = {"comm_id": comm_id, "counter": counter,

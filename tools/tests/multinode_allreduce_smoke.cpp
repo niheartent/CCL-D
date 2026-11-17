@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <unistd.h>
 #include <vector>
 
@@ -23,6 +24,10 @@ int main(int argc, char** argv) {
     MPI_Finalize();
     return 2;
   }
+  const char* faultMode = std::getenv("CCLD_FAULT_MODE");
+  const int faultRank = std::getenv("CCLD_FAULT_RANK") ? std::atoi(std::getenv("CCLD_FAULT_RANK")) : -1;
+  const int faultDelayMs = std::getenv("CCLD_FAULT_DELAY_MS") ? std::atoi(std::getenv("CCLD_FAULT_DELAY_MS")) : 2000;
+  const int faultStallMs = std::getenv("CCLD_FAULT_STALL_MS") ? std::atoi(std::getenv("CCLD_FAULT_STALL_MS")) : 30000;
   HIP_CHECK(hipSetDevice(local_rank));
   ncclUniqueId id;
   if (rank == 0) NCCL_CHECK(ncclGetUniqueId(&id));
@@ -46,9 +51,45 @@ int main(int argc, char** argv) {
   gethostname(hostname, sizeof(hostname) - 1);
   hostname[sizeof(hostname) - 1] = '\0';
   for (int iteration = 0; iteration < iterations; ++iteration) {
+    if (faultMode && std::strcmp(faultMode, "missing") == 0 &&
+        rank == faultRank && iteration == 0) {
+      std::fprintf(stderr, "injecting missing collective entry rank=%d\n", rank);
+      std::fflush(stderr);
+      sleep(5);
+      MPI_Abort(MPI_COMM_WORLD, 97);
+    }
     std::fill(host.begin(), host.end(), static_cast<float>(rank + 1));
     HIP_CHECK(hipMemcpyAsync(device, host.data(), count * sizeof(float), hipMemcpyHostToDevice, stream));
-    NCCL_CHECK(ncclAllReduce(device, device, count, ncclFloat32, ncclSum, comm, stream));
+    if (faultMode && std::strcmp(faultMode, "stall") == 0 && rank == faultRank) {
+      hipStream_t delayStream;
+      hipEvent_t delayed;
+      HIP_CHECK(hipStreamCreateWithFlags(&delayStream, hipStreamNonBlocking));
+      HIP_CHECK(hipEventCreateWithFlags(&delayed, hipEventDisableTiming));
+      HIP_CHECK(hipLaunchHostFunc(delayStream, [](void* arg) {
+        usleep(static_cast<useconds_t>(*static_cast<const int*>(arg)) * 1000);
+      }, const_cast<int*>(&faultStallMs)));
+      HIP_CHECK(hipEventRecord(delayed, delayStream));
+      HIP_CHECK(hipStreamWaitEvent(stream, delayed, 0));
+      NCCL_CHECK(ncclAllReduce(device, device, count, ncclFloat32, ncclSum, comm, stream));
+    } else if (faultMode && std::strcmp(faultMode, "slow") == 0 && rank == faultRank) {
+      hipStream_t delayStream;
+      hipEvent_t delayed;
+      HIP_CHECK(hipStreamCreateWithFlags(&delayStream, hipStreamNonBlocking));
+      HIP_CHECK(hipEventCreateWithFlags(&delayed, hipEventDisableTiming));
+      HIP_CHECK(hipLaunchHostFunc(delayStream, [](void* arg) {
+        const int delayMs = *static_cast<int*>(arg);
+        usleep(static_cast<useconds_t>(delayMs) * 1000);
+      }, const_cast<int*>(&faultDelayMs)));
+      HIP_CHECK(hipEventRecord(delayed, delayStream));
+      HIP_CHECK(hipStreamWaitEvent(stream, delayed, 0));
+      // Keep the delayed event and stream alive until the collective is done.
+      NCCL_CHECK(ncclAllReduce(device, device, count, ncclFloat32, ncclSum, comm, stream));
+      HIP_CHECK(hipStreamSynchronize(stream));
+      HIP_CHECK(hipEventDestroy(delayed));
+      HIP_CHECK(hipStreamDestroy(delayStream));
+    } else {
+      NCCL_CHECK(ncclAllReduce(device, device, count, ncclFloat32, ncclSum, comm, stream));
+    }
     HIP_CHECK(hipStreamSynchronize(stream));
     HIP_CHECK(hipMemcpy(host.data(), device, count * sizeof(float), hipMemcpyDeviceToHost));
     for (float v : host) if (v != expected) { bad = 1; break; }

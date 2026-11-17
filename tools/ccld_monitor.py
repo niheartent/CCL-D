@@ -69,6 +69,9 @@ def main():
             signature = (result["comm_id"], result["counter"], status,
                          result.get("operation"), result.get("root_cause"),
                          tuple(result.get("missing_ranks", [])),
+                         tuple(result.get("incomplete_ranks", [])),
+                         tuple(result.get("slow_ranks", [])),
+                         json.dumps(result.get("stalled_intervals", []), sort_keys=True),
                          json.dumps(result.get("mismatches", {}), sort_keys=True),
                          tuple(result.get("send_counts", [])),
                          tuple(result.get("recv_counts", [])))
