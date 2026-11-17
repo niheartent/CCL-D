@@ -429,8 +429,8 @@ static ncclResult_t commFree(ncclComm_t comm) {
   CUDACHECK(hipFree(comm->devComm->devProf));
 #endif
 
-#ifdef ENABLE_COLLTRACE
   rcclCcldStopThread(comm);
+#ifdef ENABLE_COLLTRACE
   comm->collTraceExit = 1;
   if (comm->collTraceEnabled) {
     if (comm->collTraceThread)
