@@ -11,7 +11,7 @@
 | body: 每个 KID、每个 channel 的 sendCount/recvCount | `ChannelBody` 为两个 64-bit 计数 | 已符合 |
 | mode=0/1/2 语义 | host/device 使用 0、1、2；mode=1 为 tid==0 计数，mode=2 为全部线程计数 | 已符合代码语义，尚缺三协议逐路径实测 |
 | 连续 pinned memory | communicator 初始化时分配 pinned frame，slots 可由环境变量设置 | 结构已实现，严格资源验收未完成 |
-| LRU 按 kernelIndex 复用 body | host `RecordPool` 选择空闲 block，device 通过 slot 索引 | 部分符合；缺少材料线程生命周期下的完整回收证据 |
+| LRU 按 kernelIndex 复用 body | host `RecordPool` 选择空闲 block，device 通过 slot 索引；同一 TraceID 记录 pending plan 数，最后一个 kernel callback 才释放 | 架构已按材料实现，待本次增量构建后的多-plan回归验收 |
 
 ## 线程模型核对
 
@@ -23,7 +23,7 @@
 4. hostcallback 通知 diagnose thread 当前操作完成；
 5. xccl main thread 回收 diagnose thread 资源。
 
-当前代码已创建独立 diagnose thread：它周期读取 pinned frame、调用采样/输出逻辑，并在 communicator 销毁时停止并 join；kernel hostcallback 通过条件变量通知该线程。回调粒度已改为每个 kernel plan 一个 hostcallback，避免把整个 planner flush 合并成一次通知。该改动尚未完成 gfx936 链接和双节点实测，因此在构建验证前仍标为待验收；不能把“线程已创建”本身当作材料验收通过。
+当前代码已创建独立 diagnose thread：它周期读取 pinned frame、调用采样/输出逻辑，并在 communicator 销毁时停止并 join；kernel hostcallback 通过条件变量通知该线程。回调粒度为每个 kernel plan；同一 TraceID 的多个 plan 只在最后一个 callback 回收 frame 并输出 complete。该改动正在进行 gfx936 增量构建，构建和多节点回归完成前仍标为待验收。
 
 算法带宽字段已加入输出；材料要求该字段但未给出公式，当前实现采用 RCCL replayer 的 AllReduce、AllGather、ReduceScatter bus-bandwidth 倍率，必须经过运行数据核对后才能验收。
 

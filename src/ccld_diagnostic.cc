@@ -41,6 +41,10 @@ struct OperationInfo {
   std::string op;
   std::set<uint16_t> channels;
   std::map<uint16_t, std::pair<uint64_t, uint64_t>> finalCounts;
+  // Number of launched kernel plans that carry this TraceID.  A collective
+  // may be split into several plans; the frame remains live until all of them
+  // have delivered their completion callback.
+  size_t pendingPlans = 0;
 };
 struct SamplePrevious { uint64_t timestamp, send, recv; };
 std::unordered_map<const ncclComm*, std::unordered_map<uint64_t, OperationInfo>> g_operations;
@@ -312,6 +316,7 @@ void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
 
 void rcclCcldRegisterPlanCounter(struct ncclKernelPlan* plan, uint64_t counter) {
   if (!plan || counter == UINT64_MAX || !enabled()) return;
+  std::lock_guard<std::mutex> guard(g_lock);
   for (int i = 0; i < plan->ccldCounterCount; ++i) if (plan->ccldCounters[i] == counter) return;
   if (plan->ccldCounterCount == plan->ccldCounterCapacity) {
     const int next = plan->ccldCounterCapacity ? plan->ccldCounterCapacity * 2 : 8;
@@ -320,6 +325,11 @@ void rcclCcldRegisterPlanCounter(struct ncclKernelPlan* plan, uint64_t counter) 
     plan->ccldCounters = p; plan->ccldCounterCapacity = next;
   }
   plan->ccldCounters[plan->ccldCounterCount++] = counter;
+  auto commIt = g_operations.find(plan->comm);
+  if (commIt != g_operations.end()) {
+    auto opIt = commIt->second.find(counter);
+    if (opIt != commIt->second.end()) ++opIt->second.pendingPlans;
+  }
 }
 
 static void writeCompletedDiagnostics(const struct ncclComm* comm, const CompletedEvent* events, size_t count) {
@@ -397,6 +407,10 @@ void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm, const uint64_t* co
       const rccl_ccld::ChannelBody& body = block->channels[channel];
       opIt->second.finalCounts[channel] = std::make_pair(body.sendCount, body.recvCount);
     }
+    if (opIt->second.pendingPlans > 0) --opIt->second.pendingPlans;
+    // This callback represents one kernel. Keep the frame and accumulated
+    // counts alive while another plan for the same TraceID is outstanding.
+    if (opIt->second.pendingPlans != 0) continue;
     // The callback is ordered after all work that can update this body. Copy
     // the final counts before releasing the block; the polling thread only
     // needs the host snapshot to serialize the JSON record later.
