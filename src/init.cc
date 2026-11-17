@@ -245,24 +245,10 @@ RCCL_PARAM(CcldDiagMode, "CCLD_MODE", 1);
 // Should be in sync with 'ALL_COLLS' in Generator.cmake
 void *ncclCommThreadMain(void *arg) {
   ncclComm_t comm = (ncclComm_t)arg;
-  struct timespec threadCpuStart{}, threadWallStart{};
-  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &threadCpuStart);
-  clock_gettime(CLOCK_MONOTONIC, &threadWallStart);
-  uint64_t diagnosticSampleCpuNs = 0;
-  uint64_t diagnosticSampleWallNs = 0;
-  uint64_t diagnosticSampleCalls = 0;
   int head[MAXCHANNELS];
-  const uint64_t sampleIntervalNs = static_cast<uint64_t>(
-      std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCcldSampleUs()))) * 1000ULL;
   const useconds_t samplePollUs = static_cast<useconds_t>(
       std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCcldSampleUs())));
   double vega_gpu_rtc_freq;
-  auto elapsedNs = [](const struct timespec& begin, const struct timespec& end) -> uint64_t {
-    int64_t sec = static_cast<int64_t>(end.tv_sec) - static_cast<int64_t>(begin.tv_sec);
-    int64_t nsec = static_cast<int64_t>(end.tv_nsec) - static_cast<int64_t>(begin.tv_nsec);
-    if (nsec < 0) { --sec; nsec += 1000000000LL; }
-    return sec > 0 ? static_cast<uint64_t>(sec) * 1000000000ULL + static_cast<uint64_t>(nsec) : static_cast<uint64_t>(nsec);
-  };
 
   vega_gpu_rtc_freq = GetDeviceWallClockRateInKhz(comm->cudaDev) * 1.0E3;
   for (int channel = 0; channel < MAXCHANNELS; channel++) {
@@ -273,20 +259,6 @@ void *ncclCommThreadMain(void *arg) {
       head[channel] = tail - COLLTRACE_NUM_ITEMS;
   }
   do {
-    rcclCcldDrainDiagnostics(comm);
-    if (comm->ccldDiag != nullptr) {
-      struct timespec sampleCpuStart{}, sampleWallStart{}, sampleCpuEnd{}, sampleWallEnd{};
-      clock_gettime(CLOCK_THREAD_CPUTIME_ID, &sampleCpuStart);
-      clock_gettime(CLOCK_MONOTONIC, &sampleWallStart);
-      const uint64_t sampleNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch()).count();
-      rcclCcldSampleDiagnostics(comm, sampleNs, sampleIntervalNs);
-      clock_gettime(CLOCK_THREAD_CPUTIME_ID, &sampleCpuEnd);
-      clock_gettime(CLOCK_MONOTONIC, &sampleWallEnd);
-      diagnosticSampleCpuNs += elapsedNs(sampleCpuStart, sampleCpuEnd);
-      diagnosticSampleWallNs += elapsedNs(sampleWallStart, sampleWallEnd);
-      ++diagnosticSampleCalls;
-    }
     int numActiveChans = MAXCHANNELS;
     for (int channel = 0; channel < MAXCHANNELS; channel++) {
       int tail = comm->collTraceTail[channel].tail;
@@ -360,14 +332,6 @@ void *ncclCommThreadMain(void *arg) {
       break;
     usleep(samplePollUs);
   } while(true);
-  struct timespec threadCpuEnd{}, threadWallEnd{};
-  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &threadCpuEnd);
-  clock_gettime(CLOCK_MONOTONIC, &threadWallEnd);
-  const uint64_t cpuNs = elapsedNs(threadCpuStart, threadCpuEnd);
-  const uint64_t wallNs = elapsedNs(threadWallStart, threadWallEnd);
-  rcclCcldRecordThreadResource(comm, cpuNs, wallNs, diagnosticSampleCpuNs,
-                               diagnosticSampleWallNs, diagnosticSampleCalls,
-                               rcclCcldSampleCount(comm), sampleIntervalNs);
   if (comm->collTraceThread)
     pthread_exit(NULL);
   else
@@ -466,6 +430,7 @@ static ncclResult_t commFree(ncclComm_t comm) {
 #endif
 
 #ifdef ENABLE_COLLTRACE
+  rcclCcldStopThread(comm);
   comm->collTraceExit = 1;
   if (comm->collTraceEnabled) {
     if (comm->collTraceThread)
@@ -2176,6 +2141,18 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   NCCLCHECKGOTO(ncclTunerPluginLoad(comm), res, fail);
   if (comm->tuner) {
     NCCLCHECK(comm->tuner->init(comm->nRanks, comm->nNodes, ncclDebugLog, &comm->tunerContext));
+  }
+
+  // The AntCCL diagnose thread starts after communicator topology and identity
+  // are fully initialized. It owns periodic pinned-frame sampling independently
+  // of the RCCL collTrace worker.
+  if (rcclCcldEnabled()) {
+    const uint64_t ccldIntervalNs = static_cast<uint64_t>(
+        std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCcldSampleUs()))) * 1000ULL;
+    if (!rcclCcldStartThread(comm, ccldIntervalNs)) {
+      res = ncclSystemError;
+      goto fail;
+    }
   }
 
   // update communicator state

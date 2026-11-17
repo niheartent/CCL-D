@@ -15,9 +15,11 @@
 #include <mutex>
 #include <memory>
 #include <map>
+#include <pthread.h>
 #include <set>
 #include <sstream>
 #include <string>
+#include <time.h>
 #include <unordered_map>
 
 namespace {
@@ -44,6 +46,17 @@ struct SamplePrevious { uint64_t timestamp, send, recv; };
 std::unordered_map<const ncclComm*, std::unordered_map<uint64_t, OperationInfo>> g_operations;
 std::unordered_map<std::string, SamplePrevious> g_samplePrevious;
 std::unordered_map<const ncclComm*, uint64_t> g_sampleCounts;
+
+struct DiagnosticThreadState {
+  const ncclComm* comm = nullptr;
+  pthread_t thread{};
+  pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+  pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
+  bool stop = false;
+  uint64_t notificationGeneration = 0;
+  uint64_t sampleIntervalNs = 200000;
+};
+std::unordered_map<const ncclComm*, std::unique_ptr<DiagnosticThreadState>> g_threads;
 
 bool enabled() {
   const char* value = std::getenv("RCCL_CCLD_ENABLE");
@@ -89,9 +102,122 @@ uint64_t wallNs() {
       std::chrono::system_clock::now().time_since_epoch()).count());
 }
 const char* safe(const char* value) { return value ? value : ""; }
+
+uint64_t elapsedTimespecNs(const struct timespec& begin, const struct timespec& end) {
+  int64_t sec = static_cast<int64_t>(end.tv_sec) - static_cast<int64_t>(begin.tv_sec);
+  int64_t ns = static_cast<int64_t>(end.tv_nsec) - static_cast<int64_t>(begin.tv_nsec);
+  if (ns < 0) { --sec; ns += 1000000000LL; }
+  return sec > 0 ? static_cast<uint64_t>(sec) * 1000000000ULL + static_cast<uint64_t>(ns)
+                 : static_cast<uint64_t>(ns);
+}
+
+double algorithmBandwidthFactor(const std::string& op, int nranks) {
+  if (nranks <= 0) return 1.0;
+  if (op == "AllReduce") return 2.0 * static_cast<double>(nranks - 1) / nranks;
+  if (op == "AllGather" || op == "ReduceScatter")
+    return static_cast<double>(nranks - 1) / nranks;
+  return 1.0;
+}
+
+void* diagnosticThreadMain(void* arg) {
+  DiagnosticThreadState* state = static_cast<DiagnosticThreadState*>(arg);
+  const ncclComm* comm = state->comm;
+  struct timespec cpuStart{}, wallStart{};
+  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpuStart);
+  clock_gettime(CLOCK_MONOTONIC, &wallStart);
+  uint64_t sampleCpuNs = 0, sampleWallNs = 0, sampleCalls = 0;
+  const uint64_t interval = state->sampleIntervalNs;
+  while (true) {
+    pthread_mutex_lock(&state->mutex);
+    const uint64_t observedGeneration = state->notificationGeneration;
+    const bool stopping = state->stop;
+    pthread_mutex_unlock(&state->mutex);
+    if (stopping) break;
+    struct timespec sampleCpuStart{}, sampleWallStart{}, sampleCpuEnd{}, sampleWallEnd{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &sampleCpuStart);
+    clock_gettime(CLOCK_MONOTONIC, &sampleWallStart);
+    rcclCcldDrainDiagnostics(comm);
+    rcclCcldSampleDiagnostics(comm, nowNs(), interval);
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &sampleCpuEnd);
+    clock_gettime(CLOCK_MONOTONIC, &sampleWallEnd);
+    sampleCpuNs += elapsedTimespecNs(sampleCpuStart, sampleCpuEnd);
+    sampleWallNs += elapsedTimespecNs(sampleWallStart, sampleWallEnd);
+    ++sampleCalls;
+
+    pthread_mutex_lock(&state->mutex);
+    if (state->stop) { pthread_mutex_unlock(&state->mutex); break; }
+    if (state->notificationGeneration != observedGeneration) {
+      pthread_mutex_unlock(&state->mutex);
+      continue;
+    }
+    struct timespec deadline{};
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += static_cast<time_t>(interval / 1000000000ULL);
+    deadline.tv_nsec += static_cast<long>(interval % 1000000000ULL);
+    if (deadline.tv_nsec >= 1000000000L) { ++deadline.tv_sec; deadline.tv_nsec -= 1000000000L; }
+    pthread_cond_timedwait(&state->condition, &state->mutex, &deadline);
+    const bool stop = state->stop;
+    pthread_mutex_unlock(&state->mutex);
+    if (stop) break;
+  }
+  rcclCcldDrainDiagnostics(comm);
+  struct timespec cpuEnd{}, wallEnd{};
+  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpuEnd);
+  clock_gettime(CLOCK_MONOTONIC, &wallEnd);
+  rcclCcldRecordThreadResource(comm, elapsedTimespecNs(cpuStart, cpuEnd),
+                               elapsedTimespecNs(wallStart, wallEnd),
+                               sampleCpuNs, sampleWallNs, sampleCalls,
+                               rcclCcldSampleCount(comm), interval);
+  return nullptr;
+}
 }
 
 bool rcclCcldEnabled() { return enabled(); }
+
+bool rcclCcldStartThread(struct ncclComm* comm, uint64_t sampleIntervalNs) {
+  if (!comm || !enabled()) return false;
+  std::lock_guard<std::mutex> guard(g_lock);
+  if (g_threads.find(comm) != g_threads.end()) return true;
+  auto state = std::make_unique<DiagnosticThreadState>();
+  state->comm = comm;
+  state->sampleIntervalNs = sampleIntervalNs ? sampleIntervalNs : 200000;
+  DiagnosticThreadState* raw = state.get();
+  g_threads.emplace(comm, std::move(state));
+  if (pthread_create(&raw->thread, nullptr, diagnosticThreadMain, raw) != 0) {
+    g_threads.erase(comm);
+    return false;
+  }
+  return true;
+}
+
+void rcclCcldNotifyCompletion(const struct ncclComm* comm) {
+  std::lock_guard<std::mutex> guard(g_lock);
+  auto it = g_threads.find(comm);
+  if (it == g_threads.end()) return;
+  pthread_mutex_lock(&it->second->mutex);
+  ++it->second->notificationGeneration;
+  pthread_cond_signal(&it->second->condition);
+  pthread_mutex_unlock(&it->second->mutex);
+}
+
+void rcclCcldStopThread(struct ncclComm* comm) {
+  if (!comm) return;
+  std::unique_ptr<DiagnosticThreadState> state;
+  {
+    std::lock_guard<std::mutex> guard(g_lock);
+    auto it = g_threads.find(comm);
+    if (it == g_threads.end()) return;
+    state = std::move(it->second);
+    g_threads.erase(it);
+  }
+  pthread_mutex_lock(&state->mutex);
+  state->stop = true;
+  pthread_cond_signal(&state->condition);
+  pthread_mutex_unlock(&state->mutex);
+  pthread_join(state->thread, nullptr);
+  pthread_cond_destroy(&state->condition);
+  pthread_mutex_destroy(&state->mutex);
+}
 
 void rcclCcldRecordEnqueue(struct ncclInfo* info) {
   if (!info || !info->comm || !enabled()) return;
@@ -207,6 +333,11 @@ static void writeCompletedDiagnostics(const struct ncclComm* comm, const Complet
     auto opIt = ops->second.find(counter);
     if (opIt == ops->second.end()) continue;
     const uint64_t finishNs = events[i].finishNs;
+    const uint64_t durationNs = finishNs > opIt->second.startNs ? finishNs - opIt->second.startNs : 0;
+    const long double algorithmBytes = static_cast<long double>(opIt->second.bytes) *
+        algorithmBandwidthFactor(opIt->second.op, comm->nRanks);
+    const uint64_t algorithmBandwidthBps = durationNs
+        ? static_cast<uint64_t>(algorithmBytes * 1000000000.0L / durationNs) : 0;
     for (const auto& channelEntry : opIt->second.finalCounts) {
       const uint16_t channel = channelEntry.first;
       const uint64_t sendCount = channelEntry.second.first;
@@ -226,7 +357,9 @@ static void writeCompletedDiagnostics(const struct ncclComm* comm, const Complet
             << ",\"send_count\":" << sendCount << ",\"recv_count\":" << recvCount
             << ",\"start_timestamp\":" << opIt->second.startNs
             << ",\"end_timestamp\":" << finishNs
-            << ",\"duration_ns\":" << (finishNs - opIt->second.startNs)
+            << ",\"duration_ns\":" << durationNs
+            << ",\"algorithm_bandwidth_Bps\":" << algorithmBandwidthBps
+            << ",\"algorithm_bandwidth_GBps\":" << (static_cast<long double>(algorithmBandwidthBps) / 1000000000.0L)
             << ",\"complete\":true";
       if (opIt->second.algorithm == NCCL_ALGO_TREE) {
         const ncclTree& tree = comm->channels[channel].tree;
@@ -248,7 +381,7 @@ void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm, const uint64_t* co
   if (!comm || !enabled() || !counters || count == 0) return;
   const uint64_t finish = nowNs();
   const uint64_t finishWall = wallNs();
-  std::lock_guard<std::mutex> guard(g_lock);
+  std::unique_lock<std::mutex> guard(g_lock);
   auto pool = g_pools.find(comm);
   auto ops = g_operations.find(comm);
   if (pool == g_pools.end() || ops == g_operations.end() || !comm->ccldDiag) return;
@@ -277,6 +410,8 @@ void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm, const uint64_t* co
     }
     pending.push_back(CompletedEvent{counters[i], finish, finishWall});
   }
+  guard.unlock();
+  rcclCcldNotifyCompletion(comm);
 }
 
 void rcclCcldDrainDiagnostics(const struct ncclComm* comm) {

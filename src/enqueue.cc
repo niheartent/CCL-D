@@ -1440,6 +1440,35 @@ static void HIPRT_CB ccldFinalizeCallback(void* context_) {
   releaseCcldFinalizeContext(context);
 }
 
+// AntCCL's hostcallback is emitted for every completed kernel plan.  Copy the
+// counters into callback-owned storage because the plan is reclaimed by the
+// normal callback queue independently of this host callback.
+static ncclResult_t scheduleCcldKernelCallback(struct ncclComm* comm,
+                                                struct ncclKernelPlan* plan,
+                                                cudaStream_t launchStream,
+                                                ncclCudaGraph graph) {
+  if (!rcclCcldEnabled() || plan == nullptr || plan->ccldCounterCount == 0)
+    return ncclSuccess;
+  size_t count = static_cast<size_t>(plan->ccldCounterCount);
+  CcldFinalizeContext* context = static_cast<CcldFinalizeContext*>(
+      std::malloc(sizeof(CcldFinalizeContext) + (count - 1) * sizeof(uint64_t)));
+  if (!context) return ncclSystemError;
+  context->comm = comm;
+  context->count = count;
+  context->persistent = false;
+  for (size_t i = 0; i < count; ++i) context->counters[i] = plan->ccldCounters[i];
+  ncclResult_t result = ncclStrongStreamAcquire(graph, &comm->sharedRes->hostStream);
+  if (result == ncclSuccess)
+    result = ncclStrongStreamWaitStream(graph, &comm->sharedRes->hostStream, launchStream);
+  if (result == ncclSuccess)
+    result = ncclStrongStreamLaunchHost(graph, &comm->sharedRes->hostStream,
+                                        ccldFinalizeCallback, context);
+  ncclResult_t releaseResult = ncclStrongStreamRelease(graph, &comm->sharedRes->hostStream);
+  if (result == ncclSuccess) result = releaseResult;
+  if (result != ncclSuccess) std::free(context);
+  return result;
+}
+
 static void persistentDestructor(void* plans_) {
   struct ncclKernelPlan* plan = (struct ncclKernelPlan*)plans_;
   struct ncclComm* comm = plan->comm;
@@ -1669,6 +1698,10 @@ ncclResult_t ncclLaunchKernelAfter_NoCuda(struct ncclComm* comm, struct ncclKern
       ncclIntruQueueMpscEnqueue(&comm->callbackQueue, &plan->reclaimer);
     }
   }
+  // The callback belongs to this kernel plan, rather than to the whole
+  // planner flush. This preserves per-kernel completion and slot lifetime.
+  NCCLCHECK(scheduleCcldKernelCallback(comm, plan, comm->planner.streams->stream,
+                                       comm->planner.capturingGraph));
   return ncclSuccess;
 }
 
@@ -1705,40 +1738,6 @@ ncclResult_t ncclLaunchFinish(struct ncclComm* comm) {
     // Release device stream as acquired in ncclLaunchPrepare()
     NCCLCHECKGOTO(ncclStrongStreamRelease(planner->capturingGraph, &comm->sharedRes->deviceStream), result, resume3);
   resume3:;
-    if (rcclCcldEnabled()) {
-      // The callback is ordered after every plan in this planner flush. Keep
-      // each channel body accumulating until this operation-level boundary.
-      size_t totalCounters = 0;
-      for (struct ncclKernelPlan* p = flushPlans; p != nullptr; p = p->next)
-        totalCounters += static_cast<size_t>(p->ccldCounterCount);
-      CcldFinalizeContext* context = nullptr;
-      if (totalCounters != 0) {
-        context = static_cast<CcldFinalizeContext*>(std::malloc(sizeof(CcldFinalizeContext) + (totalCounters - 1) * sizeof(uint64_t)));
-        if (context) {
-          context->comm = comm;
-          context->count = totalCounters;
-          context->persistent = persistent;
-          size_t at = 0;
-          for (struct ncclKernelPlan* p = flushPlans; p != nullptr; p = p->next)
-            for (int i = 0; i < p->ccldCounterCount; ++i) context->counters[at++] = p->ccldCounters[i];
-          if (persistent) flushPlans->ccldFinalizeContext = context;
-        }
-      }
-      if (context) result = ncclStrongStreamAcquire(planner->capturingGraph, &comm->sharedRes->hostStream);
-      if (context && result == ncclSuccess) {
-        result = ncclStrongStreamWaitStream(planner->capturingGraph,
-                                            &comm->sharedRes->hostStream,
-                                            launchStream);
-        if (result == ncclSuccess)
-          result = ncclStrongStreamLaunchHost(planner->capturingGraph,
-                                              &comm->sharedRes->hostStream,
-                                              ccldFinalizeCallback, context);
-        ncclResult_t releaseResult = ncclStrongStreamRelease(
-            planner->capturingGraph, &comm->sharedRes->hostStream);
-        if (result == ncclSuccess) result = releaseResult;
-      }
-      if (context && result != ncclSuccess) releaseCcldFinalizeContext(context);
-    }
   }
   return result;
 }

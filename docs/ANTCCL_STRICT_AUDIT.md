@@ -1,0 +1,63 @@
+# AntCCL 严格实现审计
+
+本审计只接受材料中定义的结构、线程模型、决策树和评测场景。通信能运行、近似注入能报警、单元测试通过，都不能替代对应验收项。
+
+## 结构逐项核对
+
+| 材料要求 | 当前代码 | 严格结论 |
+|---|---|---|
+| TraceID = commId + counter + 扩展位 | `src/include/ccld_data.h` 定义 8+8+44 字节；44-byte 扩展位按材料保留，当前不赋予额外语义 | 已符合 |
+| header: kernelIndex/mode/counter/detectChannel/traceid | `ncclCcldDiag` 使用对应字段 | 已符合 |
+| body: 每个 KID、每个 channel 的 sendCount/recvCount | `ChannelBody` 为两个 64-bit 计数 | 已符合 |
+| mode=0/1/2 语义 | host/device 使用 0、1、2；mode=1 为 tid==0 计数，mode=2 为全部线程计数 | 已符合代码语义，尚缺三协议逐路径实测 |
+| 连续 pinned memory | communicator 初始化时分配 pinned frame，slots 可由环境变量设置 | 结构已实现，严格资源验收未完成 |
+| LRU 按 kernelIndex 复用 body | host `RecordPool` 选择空闲 block，device 通过 slot 索引 | 部分符合；缺少材料线程生命周期下的完整回收证据 |
+
+## 线程模型核对
+
+材料明确要求：
+
+1. diagnose thread 定时读取 pinned buffer，计算 sendRate/recvRate；
+2. kernel thread 更新 sendCount/recvCount；
+3. kernel hostcallback 在 kernel 完成后触发；
+4. hostcallback 通知 diagnose thread 当前操作完成；
+5. xccl main thread 回收 diagnose thread 资源。
+
+当前代码已创建独立 diagnose thread：它周期读取 pinned frame、调用采样/输出逻辑，并在 communicator 销毁时停止并 join；kernel hostcallback 通过条件变量通知该线程。回调粒度已改为每个 kernel plan 一个 hostcallback，避免把整个 planner flush 合并成一次通知。该改动尚未完成 gfx936 链接和双节点实测，因此在构建验证前仍标为待验收；不能把“线程已创建”本身当作材料验收通过。
+
+算法带宽字段已加入输出；材料要求该字段但未给出公式，当前实现采用 RCCL replayer 的 AllReduce、AllGather、ReduceScatter bus-bandwidth 倍率，必须经过运行数据核对后才能验收。
+
+## 决策树核对
+
+### slow
+
+材料要求的顺序是：任务 trace 是否超过基线 → 获取 rank trace → 判断步调是否一致 → 判断 sendRate/recvRate 是否一致 → 区分计算慢、通信慢和混合场景。
+
+当前 analyzer 有 enqueue skew、completion duration、rate ratio 和窗口规则，但没有按这条顺序形成统一决策结果，也没有把 host 调用前计算慢与设备通信循环慢区分为材料定义的两类。因此 slow 决策树未完成。
+
+### hang
+
+材料要求的顺序是：是否存在未进入 collective 的 rank → 是否存在进入但未 hang 的 rank → 是否所有 rank 都进入且都 hang → 对同算法同位置 rank 比较收发次数定位首错。
+
+当前 analyzer 能报告 missing、incomplete、部分 count mismatch，但没有完成按算法拓扑位置比较收发次数的统一根因路径，也没有非通信 hang 的明确结果分支。因此 hang 决策树未完成。
+
+## 功能评测核对
+
+材料第 5.1 节的六个场景必须逐项通过：
+
+| 场景 | 当前严格结论 |
+|---|---|
+| rank 未进入 collective | 未完成；现有测试会 abort，未完成材料要求的完整诊断闭环 |
+| kernel 内异常 hang | 未完成；现有 stall 在通信开始前 |
+| rank 2 少 1024 B | 未完成；只有 analyzer 单元数据，没有双节点运行注入 |
+| collective 后非通信 hang | 未完成 |
+| collective 前计算慢 3 s | 未完成 |
+| 每次 send/recv 后通信慢 2 us | 未完成 |
+
+## 性能评测核对
+
+材料第 5.2 节要求训练耗时、吞吐、loss、CPU、pinned memory、GPU 开销均在 1% 口径内。当前没有训练实验；HIP event 微基准不能替代训练评测，采样区 CPU 不能替代独立 diagnose thread CPU，frame 字节记录不能替代 pinned memory 峰值对照。因此性能评测整体未完成。
+
+## 当前唯一可直接宣称的结果
+
+最终 callback 快照版本已通过一项工程回归：双节点 8 rank、同一 group 内 256 个 AllReduce 加 P2P、运行 2 轮，通信结果正确，slot 回收后 516 个 counter/rank 均有 complete，观测丢失为 0。这只证明该 grouped-work 生命周期路径，不能代表 AntCCL 评测完成。

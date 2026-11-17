@@ -37,6 +37,9 @@ void rcclCcldRecordThreadResource(const struct ncclComm* comm,
                                   uint64_t sampleCalls, uint64_t deviceSamples,
                                   uint64_t sampleIntervalNs);
 uint64_t rcclCcldSampleCount(const struct ncclComm* comm);
+bool rcclCcldStartThread(struct ncclComm* comm, uint64_t sampleIntervalNs);
+void rcclCcldNotifyCompletion(const struct ncclComm* comm);
+void rcclCcldStopThread(struct ncclComm* comm);
 #ifdef ENABLE_COLLTRACE
 void rcclCcldRecordDevice(const struct ncclComm* comm,
                           const struct ncclCollTrace* trace,
