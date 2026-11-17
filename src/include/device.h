@@ -419,11 +419,12 @@ struct ncclProf {
 static_assert(sizeof(struct ncclProf) == 256, "ncclProf must have size of 256");
 #endif
 
-#ifdef ENABLE_COLLTRACE
 struct alignas(8) ncclCcldDiag {
   rccl_ccld::Header header;
   rccl_ccld::ChannelBody channels[MAXCHANNELS];
 };
+
+#ifdef ENABLE_COLLTRACE
 
 typedef enum {
   ncclCollTraceNotReady = 0,
@@ -527,11 +528,11 @@ struct ncclDevComm {
 #ifdef ENABLE_COLLTRACE
   struct ncclCollTrace* collTrace;
   union ncclCollTraceTail *collTraceTail;
+  pthread_t collTraceThread;
+#endif
   struct ncclCcldDiag* ccldDiag;
   int ccldDiagSlots;
   int ccldDiagMode;
-  pthread_t collTraceThread;
-#endif
 
 #ifdef ENABLE_PROFILING
   struct ncclProf* devProf;

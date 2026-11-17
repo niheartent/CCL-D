@@ -438,11 +438,11 @@ static ncclResult_t commFree(ncclComm_t comm) {
     else
       ncclCommThreadMain((void *)comm);
   }
-  rcclCcldDrainDiagnostics(comm);
-  rcclCcldForgetComm(comm);
   NCCLCHECK(ncclCudaFree((void *)comm->collTrace));
   NCCLCHECK(ncclCudaFree((void *)comm->collTraceTail));
 #endif
+  rcclCcldDrainDiagnostics(comm);
+  rcclCcldForgetComm(comm);
 
   free(comm->peerInfo);
   if (comm->topo)
@@ -628,6 +628,7 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
 #ifdef ENABLE_COLLTRACE
   NCCLCHECK(ncclCudaCalloc(&comm->collTraceTail, MAXCHANNELS));
   NCCLCHECK(ncclCudaCalloc(&comm->collTrace, COLLTRACE_NUM_ITEMS*MAXCHANNELS));
+#endif
   comm->ccldDiag = nullptr;
   comm->ccldDiagSlots = 0;
   comm->ccldDiagMode = 0;
@@ -645,6 +646,7 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
     rcclCcldRecordResource(comm, sizeof(struct ncclCcldDiag) * static_cast<size_t>(comm->ccldDiagSlots),
                            sizeof(struct ncclCcldDiag), comm->ccldDiagSlots);
   }
+#ifdef ENABLE_COLLTRACE
   comm->collTraceExit = 0;
   comm->collTraceEnabled = false; // we can enable colltrace without starting a thread
   if (((ncclDebugLevel >= NCCL_LOG_INFO) && rcclParamKernelCollTraceEnable()) || rcclCcldEnabled()) {
@@ -797,11 +799,11 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
 #ifdef ENABLE_COLLTRACE
   tmpCommAndChans.comm.collTrace = comm->collTrace;
   tmpCommAndChans.comm.collTraceTail = comm->collTraceTail;
+  tmpCommAndChans.comm.collTraceThread = comm->collTraceThread;
+#endif
   tmpCommAndChans.comm.ccldDiag = comm->ccldDiag;
   tmpCommAndChans.comm.ccldDiagSlots = comm->ccldDiagSlots;
   tmpCommAndChans.comm.ccldDiagMode = comm->ccldDiagMode;
-  tmpCommAndChans.comm.collTraceThread = comm->collTraceThread;
-#endif
 
 #if defined(ENABLE_NPKIT)
   // Init NPKit

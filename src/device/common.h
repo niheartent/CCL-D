@@ -41,21 +41,22 @@
 #define __trace_hwreg() \
   asm volatile ("s_getreg_b32 %0, hwreg(HW_REG_HW_ID)" : "=s" (collTrace->data_0));
 #endif
-#ifdef ENABLE_COLLTRACE
 #define CCLD_DIAG_SLOT_PTR (ncclShmem.comm.ccldDiag + ncclShmem.ccldDiagSlot)
 #define CCLD_DIAG_BODY_PTR (&CCLD_DIAG_SLOT_PTR->channels[ncclShmem.channelId])
-  #define CCLD_DIAG_RESET() do { \
+#ifdef ENABLE_COLLTRACE
+#define CCLD_DIAG_RESET() do { \
     if (threadIdx.x == 0 && ncclShmem.ccldDiagActive) { \
       __atomic_store_n(&ncclShmem.collTraceTail->diag.sendCount, 0ULL, __ATOMIC_RELAXED); \
       __atomic_store_n(&ncclShmem.collTraceTail->diag.recvCount, 0ULL, __ATOMIC_RELAXED); \
     } \
   } while (0)
+#else
+#define CCLD_DIAG_RESET() do { } while (0)
+#endif
   #define CCLD_DIAG_SET_PEERS(SENDPEERS, NSEND, RECVPEERS, NRECV) do { } while (0)
   #define CCLD_DIAG_ADD(SEND, RECV) do { \
     if ((ncclShmem.comm.ccldDiagMode == 2 || tid == 0) && \
         (ncclShmem.ccldDiagActive || ncclShmem.ccldDiagActive2)) { \
-      if ((SEND) != 0) __atomic_fetch_add(&ncclShmem.collTraceTail->diag.sendCount, (uint64_t)(SEND), __ATOMIC_RELAXED); \
-      if ((RECV) != 0) __atomic_fetch_add(&ncclShmem.collTraceTail->diag.recvCount, (uint64_t)(RECV), __ATOMIC_RELAXED); \
       struct ncclCcldDiag* ccld = CCLD_DIAG_SLOT_PTR; \
       rccl_ccld::ChannelBody* body = CCLD_DIAG_BODY_PTR; \
       if (__atomic_load_n(&ccld->header.mode, __ATOMIC_ACQUIRE) != 0 && \
@@ -76,13 +77,6 @@
   } while (0)
   #define CCLD_DIAG_SEND(SEND) CCLD_DIAG_ADD((SEND), 0)
   #define CCLD_DIAG_RECV(RECV) CCLD_DIAG_ADD(0, (RECV))
-#else
-  #define CCLD_DIAG_RESET()
-  #define CCLD_DIAG_SET_PEERS(SENDPEERS, NSEND, RECVPEERS, NRECV)
-  #define CCLD_DIAG_ADD(SEND, RECV)
-  #define CCLD_DIAG_SEND(SEND)
-  #define CCLD_DIAG_RECV(RECV)
-#endif
 
 #ifdef ENABLE_COLLTRACE
   #define INC_COLL_TRACE \

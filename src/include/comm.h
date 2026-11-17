@@ -619,13 +619,14 @@ struct ncclComm {
 #ifdef ENABLE_COLLTRACE
   struct ncclCollTrace* collTrace;
   union ncclCollTraceTail *collTraceTail;
-  struct ncclCcldDiag* ccldDiag;
-  int ccldDiagSlots;
-  int ccldDiagMode;
   pthread_t collTraceThread;
   volatile bool collTraceExit;
   bool collTraceEnabled;
 #endif
+  // CCL-D diagnostic frame is independent of the optional legacy collTrace.
+  struct ncclCcldDiag* ccldDiag;
+  int ccldDiagSlots;
+  int ccldDiagMode;
 
   ncclConfig_t config;
   // initState is to more conveniently reclaim resources when errors happen.
