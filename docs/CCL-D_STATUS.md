@@ -9,7 +9,6 @@
 - grouped P2P 父 counter 关联。
 - 独立 diagnose thread、kernel callback 通知和多 plan 生命周期收口。
 - sample count 增量、Ring/Tree 拓扑分组、slow/hang 状态决策。
-- CCL-D 与 legacy collTrace 参数和线程路径隔离。
 - CCL-D 运行参数通过 RCCL 环境变量读取。
 
 ## 静态验证

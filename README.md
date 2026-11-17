@@ -30,7 +30,7 @@ export RCCL_CCLD_PLAN_COUNTER_INITIAL=8
 export RCCL_CCLD_LOG=/path/to/results/rank-{rank}.jsonl
 ```
 
-legacy collTrace 使用独立参数 `RCCL_COLLTRACE_SAMPLE_US`。修改 CCL-D 运行参数不需要重新编译。
+修改 CCL-D 运行参数不需要重新编译。
 
 ## 构建
 

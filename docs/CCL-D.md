@@ -14,7 +14,7 @@ slot 不足时输出 `OBSERVATION_DROPPED`，不等待、不覆盖活动 slot、
 
 ## 线程模型
 
-每个 communicator 启动独立 diagnose thread，周期读取 pinned frame、输出 sample，并在 kernel callback 通知后 drain 完成事件；communicator 销毁时停止并 join。legacy collTrace 使用 `RCCL_COLLTRACE_SAMPLE_US`，CCL-D 使用 `RCCL_CCLD_SAMPLE_US`。
+每个 communicator 启动独立 diagnose thread，周期读取 pinned frame、输出 sample，并在 kernel callback 通知后 drain 完成事件；communicator 销毁时停止并 join。采样周期由 `RCCL_CCLD_SAMPLE_US` 设置。
 
 ## 采样指标
 
