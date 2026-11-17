@@ -66,6 +66,6 @@
 ## 本次图片与正文复核新增结论
 
 - TraceID 的 44-byte 区域只是预留存储区；当前布局正确。counter 已改为通信域内集合操作的统一 `opCount`，RecordPool 不再生成身份；grouped P2P 的多个 Send/Recv 复用同一父 counter。该模块仍需在编译后用多 rank grouped P2P 验证跨 rank 一致性。
-- 材料中的 `sendRate/recvRate` 是固定采样周期内的收发变化频率，并按其倒数用于 slow 判定。当前 analyzer 使用 `send_count / duration` 的字节/时间值，语义未对齐，不能标为完成。
+- 采样输出已删除不符合材料语义的 `send_rate_Bps/recv_rate_Bps` 字段，改为固定采样周期内的 `send_rate/recv_rate` 原始计数增量，并将按时间换算的值单独命名为 `send_frequency_hz/recv_frequency_hz`。分析器现已只使用这些采样增量做 slow 判定；没有采样证据时不再用 complete duration 伪造通信速率。
 - slow 决策树的顺序已部分体现，但 hang 决策树尚未完整实现“未进入、部分完成、全部进入且都 hang、同算法同位置计数比较、非通信 hang”五个分支。
 - `algorithm_bandwidth_Bps` 的计算公式是实现自行选择的 RCCL bus-bandwidth 倍率，材料没有给出该公式；在没有运行数据核对前只能标为待验收。

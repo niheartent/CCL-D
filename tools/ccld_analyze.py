@@ -297,6 +297,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
     now_wall_ns = time.time_ns() if now_ns is None else now_ns
     groups = defaultdict(list)
     enqueues = defaultdict(list)
+    sample_groups = defaultdict(lambda: defaultdict(dict))
     dropped_keys = {(str(row.get("comm_id", "unknown")),
                      str(row.get("counter", "unknown")))
                     for row in records if row.get("phase") == "enqueue" and
@@ -310,6 +311,23 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
             if record.get("op") in ("Send", "Recv"):
                 continue
             enqueues[key].append(record)
+            continue
+        if record.get("phase") == "sample":
+            key = (str(record.get("comm_id", "unknown")),
+                   str(record.get("counter", "unknown")))
+            rank = int(record.get("rank", -1))
+            timestamp = int(record.get("timestamp_ns", 0))
+            previous = sample_groups[key].get(rank)
+            if previous is None or timestamp > previous["timestamp_ns"]:
+                sample_groups[key][rank] = {
+                    "timestamp_ns": timestamp,
+                    "send_delta": int(record.get("send_delta", 0)),
+                    "recv_delta": int(record.get("recv_delta", 0)),
+                    "elapsed_ns": int(record.get("elapsed_ns", 0)),
+                }
+            elif timestamp == previous["timestamp_ns"]:
+                previous["send_delta"] += int(record.get("send_delta", 0))
+                previous["recv_delta"] += int(record.get("recv_delta", 0))
             continue
         # ENABLE_COLLTRACE writes a separate legacy completion-shaped event.
         # It has topology_kind but no CCL-D algorithm/protocol fields and must
@@ -564,10 +582,19 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
             value["duration"] = duration
             value["send_rate"] = (value["send_count"] / duration) if duration else None
             value["recv_rate"] = (value["recv_count"] / duration) if duration else None
-        usable_send_rates = [v["send_rate"] for v in by_rank.values()
-                             if v["send_rate"] is not None and v["send_rate"] > 0]
-        usable_recv_rates = [v["recv_rate"] for v in by_rank.values()
-                             if v["recv_rate"] is not None and v["recv_rate"] > 0]
+        # Slow diagnosis uses AntCCL's fixed-interval sample deltas. Completion
+        # duration rates remain output as descriptive timing fields only.
+        for rank, value in by_rank.items():
+            sample = sample_groups.get((comm_id, counter), {}).get(rank)
+            value["sample_send_delta"] = sample["send_delta"] if sample else None
+            value["sample_recv_delta"] = sample["recv_delta"] if sample else None
+            value["sample_interval_ns"] = sample["elapsed_ns"] if sample else None
+        rate_send_key = "sample_send_delta"
+        rate_recv_key = "sample_recv_delta"
+        usable_send_rates = [v[rate_send_key] for v in by_rank.values()
+                             if v[rate_send_key] is not None and v[rate_send_key] > 0]
+        usable_recv_rates = [v[rate_recv_key] for v in by_rank.values()
+                             if v[rate_recv_key] is not None and v[rate_recv_key] > 0]
         slow_ranks = []
         slow_diagnosis = None
         # A one-way zero can be a valid role/topology property (for example,
@@ -578,8 +605,8 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
             send_baseline = sorted(usable_send_rates)[len(usable_send_rates) // 2]
             recv_baseline = sorted(usable_recv_rates)[len(usable_recv_rates) // 2]
             slow_ranks = sorted(rank for rank, value in by_rank.items()
-                                if value["send_rate"] < send_baseline * slow_rate_ratio or
-                                value["recv_rate"] < recv_baseline * slow_rate_ratio)
+                                if value[rate_send_key] < send_baseline * slow_rate_ratio or
+                                value[rate_recv_key] < recv_baseline * slow_rate_ratio)
             if slow_ranks:
                 # AntCCL separates host/step desynchronization from a
                 # communication-rate anomaly.  Device clocks are only
@@ -673,7 +700,7 @@ def analyze_completion_windows(records, *, window_size=5, slow_rate_ratio=0.5,
         raise ValueError("window_size must be at least 2")
     groups = defaultdict(list)
     for row in records:
-        if row.get("phase") == "complete":
+        if row.get("phase") in ("complete", "sample"):
             groups[str(row.get("comm_id", "unknown"))].append(row)
     results = []
     for comm_id, rows in sorted(groups.items()):
@@ -694,9 +721,9 @@ def analyze_completion_windows(records, *, window_size=5, slow_rate_ratio=0.5,
             window = per_collective[offset:offset + window_size]
             rate_maps = []
             for _, item in window:
-                rates = {int(rank): value["send_rate"]
+                rates = {int(rank): value["sample_send_delta"]
                          for rank, value in item["per_rank"].items()
-                         if value["send_rate"] is not None and value["send_rate"] > 0}
+                         if value["sample_send_delta"] is not None}
                 rate_maps.append(rates)
             common = set(rate_maps[0]) if rate_maps else set()
             for rates in rate_maps[1:]:

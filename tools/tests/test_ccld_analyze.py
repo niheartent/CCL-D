@@ -221,6 +221,11 @@ class CcldAnalyzeTest(unittest.TestCase):
                          "rank": rank, "nranks": 4, "send_count": 1000,
                          "recv_count": 1000, "start_timestamp": 0,
                          "end_timestamp": duration, "complete": True})
+        rows.extend({"phase": "sample", "comm_id": "abcd", "counter": 8,
+                     "rank": rank, "timestamp_ns": 1000, "elapsed_ns": 1000,
+                     "send_delta": 100 if rank == 2 else 1000,
+                     "recv_delta": 100 if rank == 2 else 1000}
+                    for rank in range(4))
         result = analyze_completions(rows)[0]
         self.assertEqual(result["status"], "COMM_SLOW")
         self.assertEqual(result["slow_ranks"], [2])
@@ -302,6 +307,10 @@ class CcldAnalyzeTest(unittest.TestCase):
                          "send_count": count, "recv_count": count,
                          "channel": 0, "ring_prev": peer, "ring_next": peer,
                          "start_timestamp": 0, "end_timestamp": 4})
+        rows.extend({"phase": "sample", "comm_id": "abcd", "counter": 12,
+                     "rank": rank, "timestamp_ns": 1000, "elapsed_ns": 1000,
+                     "send_delta": count, "recv_delta": count}
+                    for rank, count in ((0, 8), (1, 2)))
         result = analyze_completions(rows)[0]
         self.assertEqual(result["topology_analysis"]["status"], "RING_SYMMETRIC")
         self.assertEqual(result["status"], "COMM_SLOW")
@@ -328,6 +337,10 @@ class CcldAnalyzeTest(unittest.TestCase):
                          "channel": 0, "ring_prev": 1-rank, "ring_next": 1-rank,
                          "send_count": count, "recv_count": count,
                          "start_timestamp": start, "end_timestamp": start + 100_000_000})
+        rows.extend({"phase": "sample", "comm_id": "abcd", "counter": 123,
+                     "rank": rank, "timestamp_ns": 1000, "elapsed_ns": 1000,
+                     "send_delta": count, "recv_delta": count}
+                    for rank, count in ((0, 1000), (1, 100)))
         result = analyze_completions(rows)[0]
         self.assertEqual(result["status"], "MIXED_SLOW")
         self.assertEqual(result["slow_diagnosis"], "MIXED")
@@ -427,6 +440,11 @@ class CcldAnalyzeTest(unittest.TestCase):
                              "send_count": 1000, "recv_count": 1000,
                              "start_timestamp": 0, "end_timestamp": duration,
                              "complete": True})
+            rows.extend({"phase": "sample", "comm_id": "abcd", "counter": counter,
+                         "rank": rank, "timestamp_ns": 1000, "elapsed_ns": 1000,
+                         "send_delta": 100 if rank == 2 else 1000,
+                         "recv_delta": 100 if rank == 2 else 1000}
+                        for rank in (0, 1, 2))
         result = analyze_completion_windows(rows, window_size=3)[0]
         self.assertEqual(result["status"], "COMM_SLOW_WINDOW")
         self.assertEqual(result["slow_ranks"], [2])
@@ -442,6 +460,11 @@ class CcldAnalyzeTest(unittest.TestCase):
                              "send_count": 1000, "recv_count": 1000,
                              "start_timestamp": 0, "end_timestamp": duration,
                              "complete": True})
+            rows.extend({"phase": "sample", "comm_id": "abcd", "counter": counter,
+                         "rank": rank, "timestamp_ns": 1000, "elapsed_ns": 1000,
+                         "send_delta": 100 if counter == 2 and rank == 2 else 1000,
+                         "recv_delta": 100 if counter == 2 and rank == 2 else 1000}
+                        for rank in (0, 1, 2))
         self.assertEqual(analyze_completion_windows(rows, window_size=3), [])
 
     def test_progress_samples_detect_rank_stall_with_local_peer_progress(self):

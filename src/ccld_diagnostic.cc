@@ -545,8 +545,13 @@ void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t counter, u
         << ",\"send_count\":" << sendCount << ",\"recv_count\":" << recvCount
         << ",\"send_delta\":" << sendDelta << ",\"recv_delta\":" << recvDelta
         << ",\"elapsed_ns\":" << elapsedNs << ",\"counter_reset\":" << (counterReset ? "true" : "false")
-        << ",\"send_rate_Bps\":" << (elapsedNs ? static_cast<uint64_t>(static_cast<long double>(sendDelta) * 1000000000.0L / elapsedNs) : 0)
-        << ",\"recv_rate_Bps\":" << (elapsedNs ? static_cast<uint64_t>(static_cast<long double>(recvDelta) * 1000000000.0L / elapsedNs) : 0)
+        // AntCCL defines sendRate/recvRate from count changes in one sampling
+        // interval. Keep the raw interval deltas as the primary metrics and
+        // expose a frequency only as a derived, explicitly named field.
+        << ",\"send_rate\":" << sendDelta
+        << ",\"recv_rate\":" << recvDelta
+        << ",\"send_frequency_hz\":" << (elapsedNs ? static_cast<uint64_t>(static_cast<long double>(sendDelta) * 1000000000.0L / elapsedNs) : 0)
+        << ",\"recv_frequency_hz\":" << (elapsedNs ? static_cast<uint64_t>(static_cast<long double>(recvDelta) * 1000000000.0L / elapsedNs) : 0)
         << "}\n";
   ++g_sampleCounts[comm];
   g_log.flush();
