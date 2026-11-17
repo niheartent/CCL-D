@@ -35,12 +35,6 @@
   { __atomic_store_n((DST), (SRC), __ATOMIC_SEQ_CST); }
 #endif
 
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1200__) || defined(__gfx1201__)
-#define __trace_hwreg()
-#else
-#define __trace_hwreg() \
-  asm volatile ("s_getreg_b32 %0, hwreg(HW_REG_HW_ID)" : "=s" (collTrace->data_0));
-#endif
 #define CCLD_DIAG_SLOT_PTR (ncclShmem.comm.ccldDiag + ncclShmem.ccldDiagSlot)
 #define CCLD_DIAG_BODY_PTR (&CCLD_DIAG_SLOT_PTR->channels[ncclShmem.channelId])
   #define CCLD_DIAG_ADD(SEND, RECV) do { \
@@ -67,72 +61,6 @@
   #define CCLD_DIAG_SEND(SEND) CCLD_DIAG_ADD((SEND), 0)
   #define CCLD_DIAG_RECV(RECV) CCLD_DIAG_ADD(0, (RECV))
 
-#ifdef ENABLE_COLLTRACE
-  #define INC_COLL_TRACE \
-    uint32_t pos = __hip_atomic_fetch_add(&ncclShmem.collTraceTail->tail, 1, __ATOMIC_SEQ_CST, __HIP_MEMORY_SCOPE_WORKGROUP)%COLLTRACE_NUM_ITEMS; \
-    struct ncclCollTrace* collTrace = ncclShmem.collTrace+pos; \
-    collTrace->timeStamp = wall_clock64(); \
-    collTrace->bid = blockIdx.x; \
-    collTrace->tid = threadIdx.x; \
-    collTrace->channelId = ncclShmem.channelId;
-    // TODO: switch to atomicInc after llvm crash is fixed
-    // uint32_t pos = atomicInc(&ncclShmem.collTraceTail->tail, COLLTRACE_NUM_ITEMS)
-
-  #define traceKernelLaunch(launch_type) { \
-    INC_COLL_TRACE \
-    collTrace->funcIndex = ncclShmem.funcId; \
-    __trace_hwreg()\
-    if (ncclShmem.workType == ncclDevWorkTypeP2p) { \
-      struct ncclDevWorkP2p *p2pWork = (struct ncclDevWorkP2p*)ncclShmem.workStorage; \
-      collTrace->p2p.sendRank = p2pWork->sendRank; \
-      collTrace->p2p.recvRank = p2pWork->recvRank; \
-      collTrace->p2p.nP2pChannels = p2pWork->nP2pChannels; \
-      collTrace->p2p.nSendChannels = p2pWork->nSendChannels; \
-      collTrace->p2p.nRecvChannels = p2pWork->nRecvChannels; \
-      collTrace->p2p.channelBase = p2pWork->channelBase; \
-      collTrace->p2p.sendConnIndex = p2pWork->sendConnIndex; \
-      collTrace->p2p.recvConnIndex = p2pWork->recvConnIndex; \
-      collTrace->p2p.sendProtoLL = p2pWork->sendProtoLL; \
-      collTrace->p2p.recvProtoLL = p2pWork->recvProtoLL; \
-      collTrace->p2pOpCount[0] = p2pWork->sendOpCount; \
-      collTrace->p2pOpCount[1] = p2pWork->recvOpCount; \
-      collTrace->type = (launch_type) | ncclCollTraceP2pElemType; \
-    } else if (ncclShmem.workType == ncclDevWorkTypeColl) { \
-      struct ncclDevWorkColl *collWork = (struct ncclDevWorkColl*)ncclShmem.workStorage; \
-      collTrace->coll.nWarps = collWork->nWarps; \
-      collTrace->coll.nChannels = collWork->channelHi-collWork->channelLo+1; \
-      collTrace->coll.bid = ncclShmem.channelId - collWork->channelLo; \
-      collTrace->coll.root = collWork->root; \
-      collTrace->opCount = collWork->opCount; \
-      collTrace->type = (launch_type) | ncclCollTraceCollElemType; \
-    } \
-  }
-  #define traceKernelEnd(end_type)  { \
-    INC_COLL_TRACE \
-    if (ncclShmem.workType == ncclDevWorkTypeP2p) { \
-      struct ncclDevWorkP2p *p2pWork = (struct ncclDevWorkP2p*)ncclShmem.workStorage; \
-      collTrace->p2pOpCount[0] = p2pWork->sendOpCount; \
-      collTrace->p2pOpCount[1] = p2pWork->recvOpCount; \
-      collTrace->type = (end_type) | ncclCollTraceP2pElemType; \
-    } else if (ncclShmem.workType == ncclDevWorkTypeColl) { \
-      struct ncclDevWorkColl *collWork = (struct ncclDevWorkColl*)ncclShmem.workStorage; \
-      collTrace->opCount = collWork->opCount; \
-      collTrace->type = (end_type) | ncclCollTraceCollElemType; \
-    } \
-  }
-  #define traceData(data2, data4, data8_0, data8_1) { \
-    INC_COLL_TRACE \
-    collTrace->funcIndex = data2; \
-    collTrace->data_0 = data4; \
-    collTrace->opCount = data8_0; \
-    collTrace->data_1 = data8_1; \
-    collTrace->type = ncclCollTraceDataType; \
-  }
-#else
-#define traceKernelLaunch(launch_type)
-#define traceKernelEnd(end_type)
-#define traceData(data2, data4, data8_0, data8_1)
-#endif
 
 #if __CUDA_ARCH__ >= 700
 // __grid_constant__ appears to break cuda-gdb
@@ -188,10 +116,6 @@ struct ncclShmemData {
   alignas(16) union {
     unpackShmem unpack;
   } devicePlugin;
-#ifdef ENABLE_COLLTRACE
-  struct ncclCollTrace* collTrace;
-  union ncclCollTraceTail* collTraceTail;
-#endif
 #ifdef ENABLE_PROFILING
   struct ncclProf prof;
 #endif
@@ -467,7 +391,7 @@ struct RunWorkBatch {
   }
 };
 
-template<int SpecializedFnId, typename SpecializedRunWorkBatch, bool COLLTRACE, int COLL_UNROLL>
+template<int SpecializedFnId, typename SpecializedRunWorkBatch, int COLL_UNROLL>
 __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* args) {
   const int tid = threadIdx.x;
   int tn = blockDim.x;
@@ -543,12 +467,6 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
       loadWorkBatchToShmem(subtid, subtn, args, /*batchIx=*/blockIdx.x);
     } break;
   }
-#ifdef ENABLE_COLLTRACE
-  if (tid == 0) {
-    ncclShmem.collTrace = args->comm->collTrace + COLLTRACE_NUM_ITEMS*ncclShmem.channelId;
-    ncclShmem.collTraceTail = args->comm->collTraceTail + ncclShmem.channelId;
-  }
-#endif
   __syncthreads(); // publish shmem
 #ifdef ENABLE_PROFILING
   if (tid == 0) {
@@ -557,7 +475,6 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
   }
 #endif
   if (tid == 0) __insert_timestamp(__LINE__);
-  if (COLLTRACE && tid%WARP_SIZE == 0) traceKernelLaunch(ncclCollTraceKernelLaunchType);
 
   if (tid == 0 && args->workStorageType == ncclDevWorkStorageTypeFifo) {
     // ncclShmem.workConsumed written by loadWorkBatchToShmem before __syncthreads()
@@ -660,9 +577,7 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
     }
     if (aborted) break;
 
-    if (COLLTRACE && tid%WARP_SIZE == 0) traceKernelLaunch(ncclCollTraceCollLaunchType);
   }
-  if (COLLTRACE && tid%WARP_SIZE == 0) traceKernelEnd(ncclCollTraceKernelEndType);
 
 #ifdef ENABLE_PROFILING
   if (ncclShmem.comm.devProf->seq < PROFILE_NUM_LAUNCHES) {
@@ -675,10 +590,6 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
 
 __global__ void ncclDevKernel_Generic(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K);
 __global__ void ncclDevKernel_Generic_4(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K);
-#ifdef ENABLE_COLLTRACE
-__global__ void ncclDevKernelDebug_Generic(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K);
-__global__ void ncclDevKernelDebug_Generic_4(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K);
-#endif
 
 #ifdef USE_INDIRECT_FUNCTION_CALL
 #define DEFINE_ncclDevFunc(suffix, coll, redop, ty, algo, proto, unroll) \

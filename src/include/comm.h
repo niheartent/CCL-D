@@ -616,14 +616,6 @@ struct ncclComm {
   hipEvent_t doneEvent;
   hipStream_t lastStream;
 
-#ifdef ENABLE_COLLTRACE
-  struct ncclCollTrace* collTrace;
-  union ncclCollTraceTail *collTraceTail;
-  pthread_t collTraceThread;
-  volatile bool collTraceExit;
-  bool collTraceEnabled;
-#endif
-  // CCL-D diagnostic frame is independent of the optional legacy collTrace.
   struct ncclCcldDiag* ccldDiag;
   int ccldDiagSlots;
   int ccldDiagMode;

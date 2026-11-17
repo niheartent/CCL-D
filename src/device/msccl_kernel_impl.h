@@ -136,10 +136,6 @@ __device__ __forceinline__ void mscclRunInterpreter(
     case 3:
       /* set abort flag to 0 */
       if (tid%WARP_SIZE == 0) ncclShmem.aborted = 0;
-#ifdef ENABLE_COLLTRACE
-      else if (tid%WARP_SIZE == 1) ncclShmem.collTrace = comm->collTrace + COLLTRACE_NUM_ITEMS*channelId;
-      else if (tid%WARP_SIZE == 2) ncclShmem.collTraceTail = comm->collTraceTail + channelId;
-#endif
       break;
     default:
       break;
@@ -158,10 +154,6 @@ __device__ __forceinline__ void mscclRunInterpreter(
   }
 #endif
   __synclds(); // publish shmem
-
-  if (fullOps && tid == 0) {
-    traceData(__LINE__, mscclShmem.work.fnIndex, (uint64_t)mscclShmem.work.sendBuff, 0);
-  }
 
   if (tid == 0)
     *mscclShmem.work.workFifoDone = mscclShmem.work.workFifoDoneAck;
@@ -370,9 +362,6 @@ __device__ __forceinline__ void mscclRunInterpreter(
   if (tid == 0) ctx->event_buffer_head += ncclShmem.event_buffer_head;
 #endif
 
-  if (fullOps && tid == 0) {
-    traceData(__LINE__, mscclShmem.work.fnIndex, (uint64_t)mscclShmem.work.sendBuff, 0);
-  }
 }
 
 #define MSCCL_IMPL_KERNEL_ENTRY_FUNC_DEVREDOP_TYPE(devredop, type, fullOps) \

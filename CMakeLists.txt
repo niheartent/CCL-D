@@ -24,7 +24,6 @@ option(BUILD_FILE_REORG_BACKWARD_COMPATIBILITY "File/folder reorg with backward 
 option(BUILD_LOCAL_GPU_TARGET_ONLY             "Build only for GPUs detected on this machine"  OFF)
 option(BUILD_SHARED_LIBS                       "Build as shared library"                       ON)
 option(BUILD_TESTS                             "Build unit test programs"                      OFF)
-option(COLLTRACE                               "Collective Trace Option"                       ON)
 option(ENABLE_MSCCL_KERNEL                     "Enable MSCCL while compiling"                  OFF)
 option(ENABLE_MSCCLPP                          "Enable MSCCL++"                                OFF)
 option(ENABLE_IFC                              "Enable indirect function call"                 OFF)
@@ -680,7 +679,7 @@ set(GEN_DIR "${HIPIFY_DIR}/gensrc")
 
 # Execute the python script to generate required files
 execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/src/device/generate.py ${GEN_DIR} ${IFC_ENABLED} ${COLLTRACE} ${ENABLE_MSCCL_KERNEL} ${BUILD_LOCAL_GPU_TARGET_ONLY} ${ONLY_FUNCS}
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/src/device/generate.py ${GEN_DIR} ${IFC_ENABLED} ${ENABLE_MSCCL_KERNEL} ${BUILD_LOCAL_GPU_TARGET_ONLY} ${ONLY_FUNCS}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     RESULT_VARIABLE gen_py_result
     ERROR_VARIABLE gen_py_error
@@ -732,9 +731,6 @@ if(DEMANGLE_DIR)
 endif()
 
 ## Set RCCL compile definitions
-if(COLLTRACE)
-  target_compile_definitions(rccl PRIVATE ENABLE_COLLTRACE)
-endif()
 if(ENABLE_MSCCL_KERNEL)
   target_compile_definitions(rccl PRIVATE COMPILE_MSCCL_KERNEL)
 endif()

@@ -68,11 +68,10 @@ def paste(sep, *args):
   return sep.join(x for x in args if x is not None)
 
 is_ifc             = 1 if sys.argv[2] == "ON" else 0
-is_colltrace       = 1 if sys.argv[3] == "ON" else 0
-is_msccl_kernels   = 1 if sys.argv[4] == "ON" else 0
-is_local_arch_only = 1 if sys.argv[5] == "ON" else 0
+is_msccl_kernels   = 1 if sys.argv[3] == "ON" else 0
+is_local_arch_only = 1 if sys.argv[4] == "ON" else 0
 
-func_pattern = sys.argv[6:7]
+func_pattern = sys.argv[5:6]
 if func_pattern and func_pattern[0]:
   func_pattern = func_pattern[0]
 else:
@@ -390,26 +389,6 @@ with open(os.path.join(gensrc, "device_table.h"), "w") as f:
     out("__forceinline__ __device__ void NCCL_CALL_FUNCTIONS_4(unsigned short funcIndex) noexcept {\n")
     out(f"  Caller4<0, {index4}>::call4(funcIndex);\n")
     out("}\n\n")
-
-# Generate <gensrc>/device_table.cpp
-if is_colltrace:
-  with open(os.path.join(gensrc, "device_table.cpp"), "w") as f:
-    print("-- Generating %s" % os.path.join(gensrc, "device_table.cpp"))
-
-    out = f.write
-    out('#include "nccl_common.h"\n#include "device.h"\n')
-    out("\n")
-    
-    seen_fns = set()
-    out("const char* funcNames[FUNC_INDEX_TOTAL] = {\n")
-    for fn in primary_funcs:
-      fn_no_unroll = fn[:-1]
-      if fn_no_unroll not in seen_fns:
-        out('   "%s",\n' % paste("_", "ncclDevFunc", *fn_no_unroll))
-        seen_fns.add(fn_no_unroll)
-    for ty in all_tys:
-      out(f'   "ncclDevFunc_OneRankReduce_PreMulSum_{ty}",\n')
-    out("};\n")
 
 # Generate <gensrc>/host_table.cpp
 with open(os.path.join(gensrc, "host_table.cpp"), "w") as f:

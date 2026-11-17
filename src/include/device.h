@@ -28,8 +28,6 @@ extern const char* ncclAlgoStr[NCCL_NUM_ALGORITHMS];
 
 extern const char* ncclProtoStr[NCCL_NUM_PROTOCOLS];
 
-extern const char* funcNames[FUNC_INDEX_TOTAL];
-
 #define NCCL_MAX_OPS 2048
 #define NCCL_STEPS 8
 
@@ -424,68 +422,6 @@ struct alignas(8) ncclCcldDiag {
   rccl_ccld::ChannelBody channels[MAXCHANNELS];
 };
 
-#ifdef ENABLE_COLLTRACE
-
-typedef enum {
-  ncclCollTraceNotReady = 0,
-  ncclCollTraceKernelLaunchType = 1,
-  ncclCollTraceKernelEndType = 2,
-  ncclCollTraceCollLaunchType = 3,
-  ncclCollTraceAbortType = 4,
-  ncclCollTraceDataType = 5,
-  ncclCollTraceCollElemType = (1<<4),
-  ncclCollTraceP2pElemType = (1<<5),
-} ncclCollTraceDataType_t;
-
-struct ncclCollTrace {
-  uint8_t type;
-  uint8_t bid;
-  int16_t funcIndex;
-  uint32_t data_0:24;
-  uint8_t tid;
-  uint8_t channelId;
-  uint64_t timeStamp:56;
-  union {
-    uint64_t opCount;
-    uint32_t p2pOpCount[2];
-  };
-  union {
-    uint64_t data_1;
-    struct {
-      uint8_t nWarps;
-      uint8_t nChannels;
-      uint8_t bid;
-      uint8_t root;
-    } coll;
-    struct {
-      uint8_t sendRank;
-      uint8_t recvRank;
-      uint8_t nP2pChannels;
-      uint8_t nSendChannels;
-      uint8_t nRecvChannels;
-      uint8_t channelBase;
-      uint8_t sendConnIndex:2;
-      uint8_t recvConnIndex:2;
-      uint8_t sendProtoLL:1;
-      uint8_t recvProtoLL:1;
-    } p2p;
-  };
-};
-static_assert(sizeof(struct ncclCollTrace) == 8*sizeof(int), "ncclCollTrace must have a pow2 size");
-
-union ncclCollTraceTail{
-  struct {
-    uint32_t tail;
-    uint32_t reserved;
-    uint64_t sendCount;
-    uint64_t recvCount;
-  } diag;
-  uint32_t tail;
-  char padding[4096];
-};
-
-#define COLLTRACE_NUM_ITEMS 8192
-#endif
 
 struct alignas(16) ncclDevChannel {
   struct ncclDevChannelPeer** peers;
@@ -525,11 +461,6 @@ struct ncclDevComm {
   uint64_t* cpuTimestamp;
 #endif
 
-#ifdef ENABLE_COLLTRACE
-  struct ncclCollTrace* collTrace;
-  union ncclCollTraceTail *collTraceTail;
-  pthread_t collTraceThread;
-#endif
   struct ncclCcldDiag* ccldDiag;
   int ccldDiagSlots;
   int ccldDiagMode;

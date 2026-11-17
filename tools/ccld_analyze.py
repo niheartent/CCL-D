@@ -330,7 +330,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
             previous["elapsed_ns"] += max(0, int(record.get("elapsed_ns", 0)))
             previous["samples"] += 1
             continue
-        # ENABLE_COLLTRACE writes a separate legacy completion-shaped event.
+        # Records without CCL-D algorithm/protocol fields are not diagnostic completions.
         # It has topology_kind but no CCL-D algorithm/protocol fields and must
         # never be merged with the diagnostic slot completion.
         if (record.get("phase") != "complete" or record.get("op") in ("Send", "Recv") or

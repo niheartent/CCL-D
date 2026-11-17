@@ -18,7 +18,6 @@ build_static=false
 build_tests=false
 build_verbose=false
 clean_build=true
-collective_trace=true
 enable_ninja=""
 install_dependencies=false
 install_library=false
@@ -45,11 +44,10 @@ function display_help()
     echo "    -d|--dependencies          Install RCCL dependencies"
     echo "       --debug                 Build debug library"
     echo "       --enable_backtrace      Build with custom backtrace support"
-    echo "       --disable-colltrace     Build without collective trace"
     echo "       --disable-msccl-kernel  Build without MSCCL kernels"
     echo "       --disable-mscclpp       Build without MSCCL++ support"
     echo "       --disable-roctx         Build without ROCTX logging"
-    echo "    -f|--fast                  Quick-build RCCL (local gpu arch only, no backtrace, and collective trace support)"
+    echo "    -f|--fast                  Quick-build RCCL (local gpu arch only, no backtrace)"
     echo "    -h|--help                  Prints this help message"
     echo "    -i|--install               Install RCCL library (see --prefix argument below)"
     echo "    -j|--jobs                  Specify how many parallel compilation jobs to run ($num_parallel_jobs by default)"
@@ -77,7 +75,7 @@ function display_help()
 # check if we have a modern version of getopt that can handle whitespace and long parameters
 getopt -T
 if [[ "$?" -eq 4 ]]; then
-    GETOPT_PARSE=$(getopt --name "${0}" --options dfhij:lprt --longoptions address-sanitizer,dependencies,debug,enable_backtrace,disable-colltrace,disable-msccl-kernel,disable-mscclpp,fast,help,install,jobs:,local_gpu_only,amdgpu_targets:,no_clean,npkit-enable,log-trace,openmp-test-enable,roctx-enable,package_build,prefix:,rm-legacy-include-dir,run_tests_all,run_tests_quick,static,tests_build,time-trace,verbose -- "$@")
+    GETOPT_PARSE=$(getopt --name "${0}" --options dfhij:lprt --longoptions address-sanitizer,dependencies,debug,enable_backtrace,disable-msccl-kernel,disable-mscclpp,fast,help,install,jobs:,local_gpu_only,amdgpu_targets:,no_clean,npkit-enable,log-trace,openmp-test-enable,roctx-enable,package_build,prefix:,rm-legacy-include-dir,run_tests_all,run_tests_quick,static,tests_build,time-trace,verbose -- "$@")
 else
     echo "Need a new version of getopt"
     exit 1
@@ -96,11 +94,10 @@ while true; do
     -d | --dependencies)             install_dependencies=true;                                                                        shift ;;
          --debug)                    build_release=false;                                                                              shift ;;
          --enable_backtrace)         build_bfd=true;                                                                                   shift ;;
-         --disable-colltrace)        collective_trace=false;                                                                           shift ;;
          --disable-msccl-kernel)     msccl_kernel_enabled=false;                                                                       shift ;;
          --disable-mscclpp)          mscclpp_enabled=false;                                                                            shift ;;
          --disable-roctx)            roctx_enabled=false;                                                                              shift ;;
-    -f | --fast)                     build_local_gpu_only=true; collective_trace=false; msccl_kernel_enabled=false;                    shift ;;
+    -f | --fast)                     build_local_gpu_only=true; msccl_kernel_enabled=false;                                      shift ;;
     -h | --help)                     display_help;                                                                                     exit 0 ;;
     -i | --install)                  install_library=true;                                                                             shift ;;
     -j | --jobs)                     num_parallel_jobs=${2};                                                                           shift 2 ;;
@@ -228,11 +225,6 @@ fi
 # shared vs static
 if [[ "${build_static}" == true ]]; then
     cmake_common_options="${cmake_common_options} -DBUILD_SHARED_LIBS=OFF"
-fi
-
-# Disable collective trace
-if [[ "${collective_trace}" == false ]]; then
-    cmake_common_options="${cmake_common_options} -DCOLLTRACE=OFF"
 fi
 
 # Disable msccl kernel

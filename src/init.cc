@@ -235,9 +235,6 @@ void NCCL_NO_OPTIMIZE commPoison(ncclComm_t comm) {
   comm->startMagic = comm->endMagic = 0;
 }
 
-RCCL_PARAM(KernelCollTraceEnable, "KERNEL_COLL_TRACE_ENABLE", 0);
-RCCL_PARAM(KernelCollTraceThreadEnable, "KERNEL_COLL_TRACE_THREAD_ENABLE", 0);
-RCCL_PARAM(CollTraceSampleUs, "COLLTRACE_SAMPLE_US", 200);
 RCCL_PARAM(CcldEnable, "CCLD_ENABLE", 0);
 // AntCCL's reference sampling precision is 1 ms. Keep it runtime-configurable
 // while using the documented precision as the default.
@@ -246,99 +243,6 @@ RCCL_PARAM(CcldDiagSlots, "CCLD_SLOTS", 16);
 RCCL_PARAM(CcldDiagMode, "CCLD_MODE", 1);
 RCCL_PARAM(CcldPlanCounterInitial, "CCLD_PLAN_COUNTER_INITIAL", 8);
 
-#ifdef ENABLE_COLLTRACE
-// Should be in sync with 'ALL_COLLS' in Generator.cmake
-void *ncclCommThreadMain(void *arg) {
-  ncclComm_t comm = (ncclComm_t)arg;
-  int head[MAXCHANNELS];
-  const useconds_t samplePollUs = static_cast<useconds_t>(
-      std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCollTraceSampleUs())));
-  double vega_gpu_rtc_freq;
-
-  vega_gpu_rtc_freq = GetDeviceWallClockRateInKhz(comm->cudaDev) * 1.0E3;
-  for (int channel = 0; channel < MAXCHANNELS; channel++) {
-    int tail = comm->collTraceTail[channel].tail;
-    if (tail < COLLTRACE_NUM_ITEMS)
-      head[channel] = 0;
-    else
-      head[channel] = tail - COLLTRACE_NUM_ITEMS;
-  }
-  do {
-    int numActiveChans = MAXCHANNELS;
-    for (int channel = 0; channel < MAXCHANNELS; channel++) {
-      int tail = comm->collTraceTail[channel].tail;
-      int count;
-      count = tail - head[channel];
-      if (count == 0) {
-        numActiveChans--;
-        continue;
-      }
-      for (int i = 0; i < count; i++) {
-        volatile struct ncclCollTrace *td = comm->collTrace+COLLTRACE_NUM_ITEMS*channel+head[channel]%COLLTRACE_NUM_ITEMS;
-        head[channel] ++;
-        uint8_t type = td->type;
-        if (type == ncclCollTraceNotReady)
-          continue;
-        char line[1024];
-        int offset = 0;
-        uint16_t fIdx = td->funcIndex;
-        if (type == ncclCollTraceDataType) {
-          sprintf(line, "## [%012.6f] [%02d:%02d-%02d:%02x] L:%04d DT %08x %016lx %016lx",
-            (double)(td->timeStamp)/vega_gpu_rtc_freq, comm->rank, td->bid, td->channelId, td->tid,             fIdx, td->data_0, td->opCount, td->data_1);
-        } else {
-          if (type & ncclCollTraceP2pElemType)
-            sprintf(line, "## [%012.6f] [%02d:%02d-%02d:%02x] %06x-%06x", (double)(td->timeStamp)/vega_gpu_rtc_freq, comm->rank, td->bid, td->channelId, td->tid, td->p2pOpCount[0], td->p2pOpCount[1]);
-          else
-            sprintf(line, "## [%012.6f] [%02d:%02d-%02d:%02x] %06lx", (double)(td->timeStamp)/vega_gpu_rtc_freq, comm->rank, td->bid, td->channelId, td->tid, td->opCount);
-          offset = strlen(line);
-          if (type == ncclCollTraceCollElemType) {
-            sprintf(line+offset, " CE %s nw %d bi %d nc %d root %d busId %lx nRanks %d", funcNames[fIdx], td->coll.nWarps, td->coll.bid, td->coll.nChannels, td->coll.root, comm->busId, comm->nRanks);
-          } else if (type == ncclCollTraceP2pElemType) {
-            sprintf(line+offset, " Send %d -> %d/%d connIdx/LL %d/%d -> Recv %d nc %d cb %d busId %lx nRanks %d",
-              td->p2p.sendRank, td->p2p.sendConnIndex, td->p2p.sendProtoLL, td->p2p.recvConnIndex, td->p2p.recvProtoLL, td->p2p.recvRank, td->p2p.nP2pChannels, td->p2p.channelBase,
-              comm->busId, comm->nRanks);
-          } else {
-            switch (type&0xf) {
-              case ncclCollTraceKernelLaunchType:
-              case ncclCollTraceCollLaunchType:
-                if ((type&0xf) == ncclCollTraceKernelLaunchType)
-                  sprintf(line+offset, " KL HWID %8x %s", td->data_0, funcNames[fIdx]);
-                else if ((type&0xf) == ncclCollTraceCollLaunchType)
-                  sprintf(line+offset, " CL %s", funcNames[fIdx]);
-                offset = strlen(line);
-                if ((type&0xf0) == ncclCollTraceCollElemType)
-                  sprintf(line+offset, " nw %d bi %d nc %d root %d busId %lx nRanks %d", td->coll.nWarps, td->coll.bid, td->coll.nChannels, td->coll.root, comm->busId, comm->nRanks);
-                else if ((type&0xf0) == ncclCollTraceP2pElemType)
-                  sprintf(line+offset, " Send %d -> %d/%d ConnIdx/LL %d/%d -> Recv %d nc %d cb %d busId %lx nRanks %d",
-                    td->p2p.sendRank, td->p2p.sendConnIndex, td->p2p.sendProtoLL, td->p2p.recvConnIndex, td->p2p.recvProtoLL, td->p2p.recvRank, td->p2p.nP2pChannels, td->p2p.channelBase,
-                    comm->busId, comm->nRanks);
-                break;
-              case ncclCollTraceKernelEndType:
-                sprintf(line+offset, " KE busId %lx nRanks %d", comm->busId, comm->nRanks);
-                break;
-              case ncclCollTraceAbortType:
-                sprintf(line+offset, " Abort");
-                break;
-              default:
-                sprintf(line+offset, " unknown collective trace data type");
-                break;
-            }
-          }
-        }
-        INFO(NCCL_COLL, "%s", line);
-        td->type = ncclCollTraceNotReady;
-      }
-    }
-    if (comm->collTraceExit && numActiveChans == 0)
-      break;
-    usleep(samplePollUs);
-  } while(true);
-  if (comm->collTraceThread)
-    pthread_exit(NULL);
-  else
-    return 0;
-}
-#endif
 
 #undef NCCL_NO_OPTIMIZE
 
@@ -431,17 +335,6 @@ static ncclResult_t commFree(ncclComm_t comm) {
 #endif
 
   rcclCcldStopThread(comm);
-#ifdef ENABLE_COLLTRACE
-  comm->collTraceExit = 1;
-  if (comm->collTraceEnabled) {
-    if (comm->collTraceThread)
-      pthread_join(comm->collTraceThread, NULL);
-    else
-      ncclCommThreadMain((void *)comm);
-  }
-  NCCLCHECK(ncclCudaFree((void *)comm->collTrace));
-  NCCLCHECK(ncclCudaFree((void *)comm->collTraceTail));
-#endif
   rcclCcldDrainDiagnostics(comm);
   rcclCcldForgetComm(comm);
 
@@ -626,10 +519,6 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
   comm->checkPointers = ncclParamCheckPointers() == 1 ? true : false;
   comm->dmaBufSupport = (dmaBufSupported(comm) == ncclSuccess) ? true : false;
 
-#ifdef ENABLE_COLLTRACE
-  NCCLCHECK(ncclCudaCalloc(&comm->collTraceTail, MAXCHANNELS));
-  NCCLCHECK(ncclCudaCalloc(&comm->collTrace, COLLTRACE_NUM_ITEMS*MAXCHANNELS));
-#endif
   comm->ccldDiag = nullptr;
   comm->ccldDiagSlots = 0;
   comm->ccldDiagMode = 0;
@@ -647,17 +536,6 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
     rcclCcldRecordResource(comm, sizeof(struct ncclCcldDiag) * static_cast<size_t>(comm->ccldDiagSlots),
                            sizeof(struct ncclCcldDiag), comm->ccldDiagSlots);
   }
-#ifdef ENABLE_COLLTRACE
-  comm->collTraceExit = 0;
-  comm->collTraceEnabled = false; // we can enable colltrace without starting a thread
-  if ((ncclDebugLevel >= NCCL_LOG_INFO) && rcclParamKernelCollTraceEnable()) {
-    comm->collTraceEnabled = true;
-    if (rcclParamKernelCollTraceThreadEnable())
-      pthread_create(&comm->collTraceThread, NULL, ncclCommThreadMain, (void *)comm);
-    else
-      comm->collTraceThread = 0;
-  }
-#endif
   comm->collNetSupport = 0;
   memset(comm->collNetSupportMatrix, 0, sizeof(comm->collNetSupportMatrix));
 
@@ -797,11 +675,6 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
     }
   }
 
-#ifdef ENABLE_COLLTRACE
-  tmpCommAndChans.comm.collTrace = comm->collTrace;
-  tmpCommAndChans.comm.collTraceTail = comm->collTraceTail;
-  tmpCommAndChans.comm.collTraceThread = comm->collTraceThread;
-#endif
   tmpCommAndChans.comm.ccldDiag = comm->ccldDiag;
   tmpCommAndChans.comm.ccldDiagSlots = comm->ccldDiagSlots;
   tmpCommAndChans.comm.ccldDiagMode = comm->ccldDiagMode;
@@ -2147,8 +2020,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   }
 
   // The AntCCL diagnose thread starts after communicator topology and identity
-  // are fully initialized. It owns periodic pinned-frame sampling independently
-  // of the RCCL collTrace worker.
+  // are fully initialized. It owns periodic pinned-frame sampling.
   if (rcclCcldEnabled()) {
     const uint64_t ccldIntervalNs = static_cast<uint64_t>(
         std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCcldSampleUs()))) * 1000ULL;

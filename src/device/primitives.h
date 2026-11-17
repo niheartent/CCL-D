@@ -43,7 +43,6 @@
         } \
         if (spins == 0 && rate_limit > 0) { \
           rate_limit --; \
-          traceData(__LINE__, threadIdx.x, __hip_atomic_load(barriers, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_WORKGROUP), barrier_next); \
         } \
         __builtin_amdgcn_s_sleep(1); \
       } \
