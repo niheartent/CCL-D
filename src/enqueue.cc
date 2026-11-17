@@ -1455,7 +1455,8 @@ static ncclResult_t scheduleCcldKernelCallback(struct ncclComm* comm,
   if (!context) return ncclSystemError;
   context->comm = comm;
   context->count = count;
-  context->persistent = false;
+  context->persistent = ncclCudaGraphValid(graph);
+  if (context->persistent) plan->ccldFinalizeContext = context;
   for (size_t i = 0; i < count; ++i) context->counters[i] = plan->ccldCounters[i];
   ncclResult_t result = ncclStrongStreamAcquire(graph, &comm->sharedRes->hostStream);
   if (result == ncclSuccess)
@@ -1472,10 +1473,10 @@ static ncclResult_t scheduleCcldKernelCallback(struct ncclComm* comm,
 static void persistentDestructor(void* plans_) {
   struct ncclKernelPlan* plan = (struct ncclKernelPlan*)plans_;
   struct ncclComm* comm = plan->comm;
-  std::free(plan->ccldFinalizeContext);
-  plan->ccldFinalizeContext = nullptr;
   while (plan != nullptr) {
     struct ncclKernelPlan* next = plan->next;
+    std::free(plan->ccldFinalizeContext);
+    plan->ccldFinalizeContext = nullptr;
     ncclIntruQueueMpscEnqueue(&comm->callbackQueue, &plan->reclaimer);
     plan = next;
   }
