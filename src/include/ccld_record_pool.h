@@ -15,11 +15,6 @@ class RecordPool {
  public:
   explicit RecordPool(size_t capacity) : slots_(capacity) {}
 
-  uint64_t nextCounter() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return nextCounter_++;
-  }
-
   bool reserve(uint64_t counter, uint32_t* blockIndex) {
     if (!blockIndex || slots_.empty()) return false;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -76,7 +71,6 @@ class RecordPool {
   mutable std::mutex mutex_;
   std::vector<Slot> slots_;
   uint64_t clock_ = 0;
-  uint64_t nextCounter_ = 0;
 };
 
 }  // namespace rccl_ccld

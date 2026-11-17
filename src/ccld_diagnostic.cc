@@ -234,11 +234,47 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
     const size_t blocks = comm->ccldDiagSlots > 0 ? static_cast<size_t>(comm->ccldDiagSlots) : 1u;
     pool.reset(new rccl_ccld::RecordPool(blocks));
   }
-  const uint64_t counter = pool->nextCounter();
+  // The identity is the communicator-wide collective operation counter.
+  // The record pool only selects storage; it never creates TraceID values.
+  const uint64_t counter = comm->opCount;
   uint32_t blockIndex = UINT32_MAX;
   info->ccldCounter = counter;
   const uint64_t enqueueNs = nowNs();
   const uint64_t enqueueWallNs = wallNs();
+  auto existing = g_operations[comm].find(counter);
+  if (existing != g_operations[comm].end()) {
+    if (!pool->find(counter, &blockIndex)) {
+      info->ccldCounter = UINT64_MAX;
+      info->ccldKernelIndex = UINT32_MAX;
+      return;
+    }
+    // Grouped P2P calls share one parent operation identity. Keep individual
+    // enqueue rows in the log, while the lifecycle record aggregates metadata.
+    OperationInfo& operation = existing->second;
+    const std::string currentOp = safe(info->opName);
+    const bool previousP2p = operation.op == "Send" || operation.op == "Recv" || operation.op == "P2P";
+    const bool currentP2p = currentOp == "Send" || currentOp == "Recv";
+    if (operation.op != currentOp) operation.op = previousP2p && currentP2p ? "P2P" : "MIXED";
+    operation.count += info->count;
+    operation.bytes += info->count * ncclTypeSize(info->datatype);
+    if (operation.root != info->root) operation.root = -1;
+    if (operation.datatype != static_cast<int>(info->datatype)) operation.datatype = -1;
+    info->ccldKernelIndex = blockIndex;
+    g_log << "{\"schema\":1,\"phase\":\"enqueue\",\"timestamp_ns\":" << enqueueNs
+          << ",\"timestamp_wall_ns\":" << enqueueWallNs
+          << ",\"trace_id\":\"" << std::hex << comm->commHash << ':' << std::dec << counter
+          << "\",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
+          << "\",\"counter\":" << counter << ",\"op_count\":" << comm->opCount
+          << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
+          << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
+          << ",\"local_rank\":" << comm->localRank << ",\"local_ranks\":" << comm->localRanks
+          << ",\"op\":\"" << currentOp << "\",\"count\":" << info->count
+          << ",\"bytes\":" << info->count * ncclTypeSize(info->datatype)
+          << ",\"datatype\":" << static_cast<int>(info->datatype)
+          << ",\"root\":" << info->root << ",\"host_status\":\"entered\"}\n";
+    g_log.flush();
+    return;
+  }
   if (!pool->reserve(counter, &blockIndex)) {
     g_log << "{\"schema\":1,\"phase\":\"enqueue\",\"timestamp_ns\":" << enqueueNs
           << ",\"timestamp_wall_ns\":" << enqueueWallNs

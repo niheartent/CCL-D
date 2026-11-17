@@ -12,7 +12,7 @@
 | mode=0/1/2 语义 | host/device 使用 0、1、2；mode=1 为 tid==0 计数，mode=2 为全部线程计数 | 已符合代码语义，尚缺三协议逐路径实测 |
 | 连续 pinned memory | communicator 初始化时分配 pinned frame，slots 可由环境变量设置 | 结构已实现，严格资源验收未完成 |
 | 与 RCCL collTrace 解耦 | CCL-D frame、communicator/device 字段、分配和计数宏已移出 `ENABLE_COLLTRACE`；CCL-D 不再启动 legacy collTrace 线程，也不再读取其 diag 计数 | 源码已符合；最终 gfx936 构建和运行验收待完成 |
-| LRU 按 kernelIndex 复用 body | host `RecordPool` 选择空闲 block，device 通过 slot 索引；同一 TraceID 记录 pending plan 数，最后一个 kernel callback 才释放 | 生命周期结构已实现；当前 TraceID counter 仍由 `RecordPool::nextCounter()` 生成，必须改为通信域集合操作 `opCount`，并处理 grouped P2P 共用一个 opCount |
+| LRU 按 kernelIndex 复用 body | host `RecordPool` 选择空闲 block，device 通过 slot 索引；同一 TraceID 记录 pending plan 数，最后一个 kernel callback 才释放 | counter 已改为通信域 `opCount`；grouped P2P 共用父 counter 的代码已加入，待后续专门静态回归与构建后运行验收 |
 
 ## 线程模型核对
 
@@ -65,7 +65,7 @@
 
 ## 本次图片与正文复核新增结论
 
-- TraceID 的 44-byte 区域只是预留存储区；当前布局正确，但 counter 必须是通信域内集合操作的统一递增计数。源码仍使用 `RecordPool::nextCounter()`，因此这项未完成。Grouped P2P 的多个 Send/Recv 还必须共享父集合操作身份。
+- TraceID 的 44-byte 区域只是预留存储区；当前布局正确。counter 已改为通信域内集合操作的统一 `opCount`，RecordPool 不再生成身份；grouped P2P 的多个 Send/Recv 复用同一父 counter。该模块仍需在编译后用多 rank grouped P2P 验证跨 rank 一致性。
 - 材料中的 `sendRate/recvRate` 是固定采样周期内的收发变化频率，并按其倒数用于 slow 判定。当前 analyzer 使用 `send_count / duration` 的字节/时间值，语义未对齐，不能标为完成。
 - slow 决策树的顺序已部分体现，但 hang 决策树尚未完整实现“未进入、部分完成、全部进入且都 hang、同算法同位置计数比较、非通信 hang”五个分支。
 - `algorithm_bandwidth_Bps` 的计算公式是实现自行选择的 RCCL bus-bandwidth 倍率，材料没有给出该公式；在没有运行数据核对前只能标为待验收。
