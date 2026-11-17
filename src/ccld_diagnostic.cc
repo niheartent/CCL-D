@@ -41,6 +41,7 @@ struct OperationInfo {
 struct SamplePrevious { uint64_t timestamp, send, recv; };
 std::unordered_map<const ncclComm*, std::unordered_map<uint64_t, OperationInfo>> g_operations;
 std::unordered_map<std::string, SamplePrevious> g_samplePrevious;
+std::unordered_map<const ncclComm*, uint64_t> g_sampleCounts;
 
 bool enabled() {
   const char* value = std::getenv("RCCL_CCLD_ENABLE");
@@ -277,12 +278,55 @@ void rcclCcldDrainDiagnostics(const struct ncclComm* comm) {
 void rcclCcldForgetComm(const struct ncclComm* comm) {
   if (!comm) return;
   std::lock_guard<std::mutex> guard(g_lock);
-  g_pools.erase(comm); g_operations.erase(comm); g_completed.erase(comm);
+  g_pools.erase(comm); g_operations.erase(comm); g_completed.erase(comm); g_sampleCounts.erase(comm);
   const std::string prefix = std::to_string(reinterpret_cast<uintptr_t>(comm)) + ":";
   for (auto sample = g_samplePrevious.begin(); sample != g_samplePrevious.end();) {
     if (sample->first.compare(0, prefix.size(), prefix) == 0) sample = g_samplePrevious.erase(sample);
     else ++sample;
   }
+}
+
+void rcclCcldRecordResource(const struct ncclComm* comm, size_t frameBytes,
+                            size_t blockBytes, int slots) {
+  if (!comm || !enabled()) return;
+  std::lock_guard<std::mutex> guard(g_lock);
+  init(comm);
+  if (!g_log) return;
+  g_log << "{\"schema\":1,\"phase\":\"resource\",\"resource_status\":\"allocated\""
+        << ",\"rank\":" << comm->rank << ",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
+        << "\",\"slots\":" << slots << ",\"frame_block_bytes\":" << blockBytes
+        << ",\"frame_pinned_bytes\":" << frameBytes << "}\n";
+  g_log.flush();
+}
+
+void rcclCcldRecordThreadResource(const struct ncclComm* comm,
+                                  uint64_t threadCpuNs, uint64_t threadWallNs,
+                                  uint64_t sampleCpuNs, uint64_t sampleWallNs,
+                                  uint64_t sampleCalls, uint64_t deviceSamples,
+                                  uint64_t sampleIntervalNs) {
+  if (!comm || !enabled()) return;
+  std::lock_guard<std::mutex> guard(g_lock);
+  init(comm);
+  if (!g_log) return;
+  const double ratio = threadWallNs ? static_cast<double>(threadCpuNs) / static_cast<double>(threadWallNs) : 0.0;
+  const double diagnosticRatio = threadWallNs ? static_cast<double>(sampleCpuNs) / static_cast<double>(threadWallNs) : 0.0;
+  g_log << "{\"schema\":1,\"phase\":\"resource\",\"resource_status\":\"thread_complete\""
+        << ",\"rank\":" << comm->rank << ",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
+        << "\",\"thread_cpu_ns\":" << threadCpuNs << ",\"thread_wall_ns\":" << threadWallNs
+        << ",\"thread_cpu_ratio\":" << ratio
+        << ",\"diagnostic_sample_cpu_ns\":" << sampleCpuNs
+        << ",\"diagnostic_sample_wall_ns\":" << sampleWallNs
+        << ",\"diagnostic_cpu_ratio\":" << diagnosticRatio
+        << ",\"sample_calls\":" << sampleCalls
+        << ",\"device_samples\":" << deviceSamples
+        << ",\"sample_interval_ns\":" << sampleIntervalNs << "}\n";
+  g_log.flush();
+}
+
+uint64_t rcclCcldSampleCount(const struct ncclComm* comm) {
+  std::lock_guard<std::mutex> guard(g_lock);
+  auto it = g_sampleCounts.find(comm);
+  return it == g_sampleCounts.end() ? 0 : it->second;
 }
 
 void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t counter, uint16_t channel,
@@ -303,6 +347,7 @@ void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t counter, u
         << ",\"send_rate_Bps\":" << (elapsedNs ? static_cast<uint64_t>(static_cast<long double>(sendDelta) * 1000000000.0L / elapsedNs) : 0)
         << ",\"recv_rate_Bps\":" << (elapsedNs ? static_cast<uint64_t>(static_cast<long double>(recvDelta) * 1000000000.0L / elapsedNs) : 0)
         << "}\n";
+  ++g_sampleCounts[comm];
   g_log.flush();
 }
 

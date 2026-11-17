@@ -29,6 +29,14 @@ void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t opCount,
                                uint64_t recvCount, uint64_t timestampNs,
                                uint64_t sendDelta, uint64_t recvDelta,
                                uint64_t elapsedNs, bool counterReset);
+void rcclCcldRecordResource(const struct ncclComm* comm, size_t frameBytes,
+                            size_t blockBytes, int slots);
+void rcclCcldRecordThreadResource(const struct ncclComm* comm,
+                                  uint64_t threadCpuNs, uint64_t threadWallNs,
+                                  uint64_t sampleCpuNs, uint64_t sampleWallNs,
+                                  uint64_t sampleCalls, uint64_t deviceSamples,
+                                  uint64_t sampleIntervalNs);
+uint64_t rcclCcldSampleCount(const struct ncclComm* comm);
 #ifdef ENABLE_COLLTRACE
 void rcclCcldRecordDevice(const struct ncclComm* comm,
                           const struct ncclCollTrace* trace,

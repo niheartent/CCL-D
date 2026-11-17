@@ -36,6 +36,7 @@
 #include <sys/stat.h>
 #include <algorithm>
 #include <chrono>
+#include <time.h>
 #include <vector>
 #include <unistd.h>
 #include "graph/topo.h"
@@ -244,12 +245,24 @@ RCCL_PARAM(CcldDiagMode, "CCLD_MODE", 1);
 // Should be in sync with 'ALL_COLLS' in Generator.cmake
 void *ncclCommThreadMain(void *arg) {
   ncclComm_t comm = (ncclComm_t)arg;
+  struct timespec threadCpuStart{}, threadWallStart{};
+  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &threadCpuStart);
+  clock_gettime(CLOCK_MONOTONIC, &threadWallStart);
+  uint64_t diagnosticSampleCpuNs = 0;
+  uint64_t diagnosticSampleWallNs = 0;
+  uint64_t diagnosticSampleCalls = 0;
   int head[MAXCHANNELS];
   const uint64_t sampleIntervalNs = static_cast<uint64_t>(
       std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCcldSampleUs()))) * 1000ULL;
   const useconds_t samplePollUs = static_cast<useconds_t>(
       std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCcldSampleUs())));
   double vega_gpu_rtc_freq;
+  auto elapsedNs = [](const struct timespec& begin, const struct timespec& end) -> uint64_t {
+    int64_t sec = static_cast<int64_t>(end.tv_sec) - static_cast<int64_t>(begin.tv_sec);
+    int64_t nsec = static_cast<int64_t>(end.tv_nsec) - static_cast<int64_t>(begin.tv_nsec);
+    if (nsec < 0) { --sec; nsec += 1000000000LL; }
+    return sec > 0 ? static_cast<uint64_t>(sec) * 1000000000ULL + static_cast<uint64_t>(nsec) : static_cast<uint64_t>(nsec);
+  };
 
   vega_gpu_rtc_freq = GetDeviceWallClockRateInKhz(comm->cudaDev) * 1.0E3;
   for (int channel = 0; channel < MAXCHANNELS; channel++) {
@@ -262,9 +275,17 @@ void *ncclCommThreadMain(void *arg) {
   do {
     rcclCcldDrainDiagnostics(comm);
     if (comm->ccldDiag != nullptr) {
+      struct timespec sampleCpuStart{}, sampleWallStart{}, sampleCpuEnd{}, sampleWallEnd{};
+      clock_gettime(CLOCK_THREAD_CPUTIME_ID, &sampleCpuStart);
+      clock_gettime(CLOCK_MONOTONIC, &sampleWallStart);
       const uint64_t sampleNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
       rcclCcldSampleDiagnostics(comm, sampleNs, sampleIntervalNs);
+      clock_gettime(CLOCK_THREAD_CPUTIME_ID, &sampleCpuEnd);
+      clock_gettime(CLOCK_MONOTONIC, &sampleWallEnd);
+      diagnosticSampleCpuNs += elapsedNs(sampleCpuStart, sampleCpuEnd);
+      diagnosticSampleWallNs += elapsedNs(sampleWallStart, sampleWallEnd);
+      ++diagnosticSampleCalls;
     }
     int numActiveChans = MAXCHANNELS;
     for (int channel = 0; channel < MAXCHANNELS; channel++) {
@@ -339,6 +360,14 @@ void *ncclCommThreadMain(void *arg) {
       break;
     usleep(samplePollUs);
   } while(true);
+  struct timespec threadCpuEnd{}, threadWallEnd{};
+  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &threadCpuEnd);
+  clock_gettime(CLOCK_MONOTONIC, &threadWallEnd);
+  const uint64_t cpuNs = elapsedNs(threadCpuStart, threadCpuEnd);
+  const uint64_t wallNs = elapsedNs(threadWallStart, threadWallEnd);
+  rcclCcldRecordThreadResource(comm, cpuNs, wallNs, diagnosticSampleCpuNs,
+                               diagnosticSampleWallNs, diagnosticSampleCalls,
+                               rcclCcldSampleCount(comm), sampleIntervalNs);
   if (comm->collTraceThread)
     pthread_exit(NULL);
   else
@@ -634,16 +663,23 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
 #ifdef ENABLE_COLLTRACE
   NCCLCHECK(ncclCudaCalloc(&comm->collTraceTail, MAXCHANNELS));
   NCCLCHECK(ncclCudaCalloc(&comm->collTrace, COLLTRACE_NUM_ITEMS*MAXCHANNELS));
-  int ccldSlots = rcclParamCcldDiagSlots();
-  if (ccldSlots < 1) ccldSlots = 1;
-  // The value is runtime-configurable; allocation failure follows RCCL's
-  // normal initialization error path.
-  comm->ccldDiagSlots = ccldSlots;
-  int ccldMode = rcclParamCcldDiagMode();
-  if (ccldMode < 0 || ccldMode > 2) ccldMode = 1;
-  comm->ccldDiagMode = ccldMode;
-  NCCLCHECK(ncclCudaHostCalloc(&comm->ccldDiag, comm->ccldDiagSlots));
-  ncclCommPushCudaHostFree(comm, comm->ccldDiag);
+  comm->ccldDiag = nullptr;
+  comm->ccldDiagSlots = 0;
+  comm->ccldDiagMode = 0;
+  if (rcclCcldEnabled()) {
+    int ccldSlots = rcclParamCcldDiagSlots();
+    if (ccldSlots < 1) ccldSlots = 1;
+    // The value is runtime-configurable; allocation failure follows RCCL's
+    // normal initialization error path.
+    comm->ccldDiagSlots = ccldSlots;
+    int ccldMode = rcclParamCcldDiagMode();
+    if (ccldMode < 0 || ccldMode > 2) ccldMode = 1;
+    comm->ccldDiagMode = ccldMode;
+    NCCLCHECK(ncclCudaHostCalloc(&comm->ccldDiag, comm->ccldDiagSlots));
+    ncclCommPushCudaHostFree(comm, comm->ccldDiag);
+    rcclCcldRecordResource(comm, sizeof(struct ncclCcldDiag) * static_cast<size_t>(comm->ccldDiagSlots),
+                           sizeof(struct ncclCcldDiag), comm->ccldDiagSlots);
+  }
   comm->collTraceExit = 0;
   comm->collTraceEnabled = false; // we can enable colltrace without starting a thread
   if (((ncclDebugLevel >= NCCL_LOG_INFO) && rcclParamKernelCollTraceEnable()) || rcclCcldEnabled()) {

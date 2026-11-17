@@ -58,3 +58,18 @@
 ## 4. 下一步验收
 
 在多节点环境进行真实训练或等价的长时间 grouped-work 负载，至少保存 baseline 与开启 CCL-D 两组结果：总训练时间、step 平均耗时、吞吐、loss 曲线、诊断线程 CPU、pinned memory 峰值、GPU kernel/显存开销，以及 `OBSERVATION_DROPPED` 和 rank 完成比例。只有这些数据齐全后，才能对材料第 5.2 节的“影响在 1% 内”作出结论。
+
+## 5. 非训练 grouped-work 与资源探针结果
+
+测试程序 `tools/tests/multinode_grouped_work.cpp` 在 HPDPS-6/7 的 8 rank 上，在同一个 `ncclGroupStart/End` 中提交 AllReduce 与 P2P：
+
+| 配置 | 通信校验 | 诊断结果 |
+|---|---|---|
+| 64 works × 2，512 slots | PASS，errors=0 | 每 rank 132 个 operation counter，dropped=0 |
+| 128 works × 2，512 slots | PASS，errors=0 | 每 rank 260 个 operation counter，dropped=0 |
+| 256 works × 2，512 slots | PASS，errors=0 | 产生 516 个 operation；部分 rank 各丢 4 条，原因是同时在用的记录超过 512 slots |
+| 256 works × 2，1024 slots | PASS，errors=0 | 4,704 条 complete，16 条 resource，dropped=0，每 rank 516 个 counter |
+
+512-slot 容量边界证明了资源保护语义：观测记录不足时显式标记丢失，通信继续完成；1024 slots 回归证明多 plan、混合 P2P 和连续 group 在容量足够时可以完成并回收。该测试不是训练性能结论。
+
+程序同时输出 `/proc/self/status` 的 `VmPin` 前后读数，作为 pinned memory 交叉探针；容器和 UCX 初始化本身会改变 VmPin，因此必须结合 JSONL 中 `frame_pinned_bytes = 2144 × slots` 解读，不能把单次 VmPin 差值直接归因于 CCL-D。

@@ -4,20 +4,20 @@
 
 ## 1. 诊断线程 CPU
 
-**当前情况**：诊断线程已经存在并周期调用 `rcclCcldSampleDiagnostics`，但没有记录线程 CPU 时间、采样次数或 CPU 占比。它目前复用 RCCL 的 `ncclCommThreadMain`，需在 `KERNEL_COLL_TRACE` 关闭的条件下测量，避免把其他 trace 工作算进 CCL-D CPU 指标。
+**当前情况**：AntCCL 图示是独立 diagnose thread；当前 RCCL 接口仍复用 `ncclCommThreadMain`，独立线程尚未实现。代码现在同时记录共享线程 CPU/墙钟、CCL-D 采样区 CPU/墙钟、采样调用数、设备样本数和采样周期；前者包含 RCCL 服务线程其他工作，后者才是采样函数开销。`KERNEL_COLL_TRACE` 应关闭，避免把其他 trace 工作混入对照。
 
 **实现**：
 
 - 在线程入口和退出处使用 `clock_gettime(CLOCK_THREAD_CPUTIME_ID)`；
-- 维护每个 communicator 的 `thread_cpu_ns`、`thread_wall_ns`、`sample_count`；
-- 在 communicator drain 时输出一条 `resource` 记录，字段至少包括 `rank`、`slots`、`sample_interval_us`、`thread_cpu_ns`、`thread_wall_ns`、`cpu_ratio`；
+- 维护 `thread_cpu_ns`/`thread_wall_ns`（共享线程总量）和 `diagnostic_sample_cpu_ns`/`diagnostic_sample_wall_ns`（采样区量）；
+- 线程退出时输出 `sample_calls`、设备样本数、`sample_interval_ns` 和两个 CPU 比例；
 - 线程退出、初始化失败和诊断关闭时都要能输出完整或明确标记为 partial 的记录。
 
 **验收**：同一 workload 分别关闭诊断、默认采样周期、20 ms 采样周期运行，比较每 rank 的 CPU 时间和占比；检查多节点 rank 间没有异常偏离。目标是给出实际数值，再与 1% 参考口径比较。
 
 ## 2. pinned memory
 
-**当前情况**：pinned frame 已通过 `ncclCudaHostCalloc` 分配，但没有把分配大小写入日志，也没有和进程实际锁页内存交叉核对。当前 `ENABLE_COLLTRACE` 初始化分支无条件分配该 frame，即使 `RCCL_CCLD_ENABLE=0` 仍占用 pinned memory；这会污染 off/on 资源对照，必须改成只在诊断启用时分配，并保持运行期间不可动态切换开关的约束，或明确支持安全惰性初始化。
+**当前情况**：已修复 `RCCL_CCLD_ENABLE=0` 仍分配 frame 的问题；启用时写出 `frame_block_bytes`、`slots`、`frame_pinned_bytes`，关闭时不创建 CCL-D frame。仍需用 `/proc/<pid>/status` 的 `VmPin` 交叉核对 allocator 结果。
 
 **当前结构的基线**：`Header` 为 96 B，`MAXCHANNELS=128`，每个 `ChannelBody` 为 16 B，因此 `sizeof(ncclCcldDiag)=2144 B`；`RCCL_CCLD_SLOTS=512` 时每个 communicator 的 frame 为 1,097,728 B。该数值与材料示例 2208 B 不同，不能直接沿用材料数字。
 
@@ -44,7 +44,7 @@
 
 ## 4. 同一 group 内多 work 并发
 
-**当前情况**：RCCL planner 已将多个 plan 的 CCL-D counter 收集到统一 finalize callback，说明底层路径具备聚合基础；现有五算子压力程序每个算子后同步，尚未验证 grouped work、多 plan 和混合 P2P 的边界。代码已实现一部分，缺的是端到端压力回归和生命周期证据，不是“完全没有实现”。
+**当前情况**：RCCL planner 已将多个 plan 的 CCL-D counter 收集到统一 finalize callback。原实现只排队完成事件，由周期线程稍后 drain；双节点 256×2、512 slots 时少数 rank 在下一轮开始前未及时释放已完成 slot，产生 4 条误丢观测。现已改成 stream-ordered completion callback 立即 drain 完成记录并释放 slot，同时继续遵守容量不足时丢观测、通信继续的保护策略；新版本正在编译，待回归确认 256×2、512 slots 下的修复结果。
 
 **实现测试程序**：
 
@@ -53,7 +53,7 @@
 - 让 work 数超过单个 plan 容量，强制产生多个 plan，再测试连续 group；
 - 每个 rank 校验数据，并检查每个用户操作都有唯一 TraceID/counter、正确 op/count/algorithm/protocol；
 - 检查一个 group 的所有 counter 都在统一 callback 后完成，且每个 slot 都能回收复用；
-- 检查无 TraceID 串写、无重复 complete、无错误 `OBSERVATION_DROPPED`。
+- 检查无 TraceID 串写、无重复 complete；容量足够时要求 dropped 为零，容量不足时量化 dropped 并确认通信继续。
 
 **验收指标**：操作数、enqueue 数、complete 数按 rank 对齐；`counter` 集合和预期操作集合一致；连续多轮后 active slot 回到零或可复用；通信数据全部正确。
 

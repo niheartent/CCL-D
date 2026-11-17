@@ -1432,6 +1432,12 @@ static void releaseCcldFinalizeContext(CcldFinalizeContext* context) {
 static void HIPRT_CB ccldFinalizeCallback(void* context_) {
   CcldFinalizeContext* context = static_cast<CcldFinalizeContext*>(context_);
   rcclCcldFinalizeDiagnostics(context->comm, context->counters, context->count);
+  // Finalize and release the operation's frame at this stream-ordered
+  // completion boundary. Waiting for the periodic polling thread can leave
+  // completed frames occupied while the next grouped operation is enqueued.
+  // The drain only reads host-pinned memory and writes the diagnostic log; it
+  // does not call back into the HIP runtime from this host callback.
+  rcclCcldDrainDiagnostics(context->comm);
   // A captured graph replays the same host node repeatedly. Its context lives
   // with the graph and is released by persistentDestructor instead.
   releaseCcldFinalizeContext(context);
