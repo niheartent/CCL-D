@@ -225,22 +225,19 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual(result["status"], "COMM_SLOW")
         self.assertEqual(result["slow_ranks"], [2])
 
-    def test_completion_duration_outlier_is_detected_first(self):
+    def test_completion_duration_jitter_does_not_override_directional_counters(self):
         rows = []
-        for rank, duration in ((0, 100), (1, 105), (2, 400)):
+        for rank, duration, sends, receives in ((0, 100, 1000, 0),
+                                                (1, 400, 0, 1000),
+                                                (2, 105, 1000, 1000)):
             rows.append({"phase": "complete", "comm_id": "duration",
                          "counter": 1, "rank": rank, "nranks": 3,
-                         "algorithm": -1, "protocol": -1,
-                         "send_count": 1000, "recv_count": 1000,
+                         "algorithm": 1, "protocol": 2,
+                         "send_count": sends, "recv_count": receives,
                          "start_timestamp": 0, "end_timestamp": duration,
                          "complete": True})
         result = analyze_completions(rows)[0]
-        self.assertEqual(result["status"], "COMM_SLOW")
-        self.assertEqual(result["slow_ranks"], [2])
-        self.assertAlmostEqual(result["per_rank"][2]["send_rate"], 2.5)
-        self.assertEqual(result["root_cause"], "COMMUNICATION_PROGRESS_SLOW")
-        self.assertEqual(result["first_error_rank"], 2)
-        self.assertIn("rates", result["evidence"])
+        self.assertEqual(result["status"], "TOPOLOGY_PENDING")
 
     def test_completion_slow_rate_waits_for_both_directions_on_all_ranks(self):
         rows = []
