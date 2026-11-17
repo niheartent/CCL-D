@@ -237,6 +237,7 @@ void NCCL_NO_OPTIMIZE commPoison(ncclComm_t comm) {
 
 RCCL_PARAM(KernelCollTraceEnable, "KERNEL_COLL_TRACE_ENABLE", 0);
 RCCL_PARAM(KernelCollTraceThreadEnable, "KERNEL_COLL_TRACE_THREAD_ENABLE", 0);
+RCCL_PARAM(CollTraceSampleUs, "COLLTRACE_SAMPLE_US", 200);
 RCCL_PARAM(CcldEnable, "CCLD_ENABLE", 0);
 // AntCCL's reference sampling precision is 1 ms. Keep it runtime-configurable
 // while using the documented precision as the default.
@@ -251,7 +252,7 @@ void *ncclCommThreadMain(void *arg) {
   ncclComm_t comm = (ncclComm_t)arg;
   int head[MAXCHANNELS];
   const useconds_t samplePollUs = static_cast<useconds_t>(
-      std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCcldSampleUs())));
+      std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCollTraceSampleUs())));
   double vega_gpu_rtc_freq;
 
   vega_gpu_rtc_freq = GetDeviceWallClockRateInKhz(comm->cudaDev) * 1.0E3;
