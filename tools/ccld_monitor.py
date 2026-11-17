@@ -56,6 +56,7 @@ def main():
             anomaly = status in ("MISMATCH", "MISSING_RANK", "ENQUEUE_SKEW",
                                  "COUNT_MISMATCH", "MISSING_COMPLETION", "COMM_SLOW",
                                  "COMM_SLOW_WINDOW", "COMM_STALLED",
+                                 "COMPUTATION_SLOW", "MIXED_SLOW",
                                  "P2P_PEER_MISSING", "P2P_TRANSFER_MISMATCH", "BROADCAST_ROLE_MISMATCH",
                                  "ALLTOALL_RANK_MISSING", "ALLTOALL_SHAPE_MISMATCH",
                                  "COLLECTIVE_SHAPE_MISMATCH", "DIAGNOSTIC_BATCH_DROPPED",

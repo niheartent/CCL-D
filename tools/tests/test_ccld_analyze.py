@@ -306,6 +306,33 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual(result["topology_analysis"]["status"], "RING_SYMMETRIC")
         self.assertEqual(result["status"], "COMM_SLOW")
 
+    def test_slow_tree_marks_compute_step_and_shortest_collective(self):
+        rows = []
+        for rank, start, end in ((0, 0, 50_000_000), (1, 5_000_000, 105_000_000)):
+            rows.append({"phase": "complete", "comm_id": "abcd", "counter": 122,
+                         "rank": rank, "nranks": 2, "algorithm": 1,
+                         "channel": 0, "ring_prev": 1-rank, "ring_next": 1-rank,
+                         "send_count": 1000, "recv_count": 1000,
+                         "start_timestamp": start, "end_timestamp": end})
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["status"], "COMPUTATION_SLOW")
+        self.assertEqual(result["slow_diagnosis"], "COMPUTATION_SLOW")
+        self.assertEqual(result["slow_ranks"], [0])
+        self.assertEqual(result["root_cause"], "COMPUTATION_STEP_SLOW")
+
+    def test_slow_tree_marks_mixed_when_step_and_rate_both_diverge(self):
+        rows = []
+        for rank, start, count in ((0, 0, 1000), (1, 5_000_000, 100)):
+            rows.append({"phase": "complete", "comm_id": "abcd", "counter": 123,
+                         "rank": rank, "nranks": 2, "algorithm": 1,
+                         "channel": 0, "ring_prev": 1-rank, "ring_next": 1-rank,
+                         "send_count": count, "recv_count": count,
+                         "start_timestamp": start, "end_timestamp": start + 100_000_000})
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["status"], "MIXED_SLOW")
+        self.assertEqual(result["slow_diagnosis"], "MIXED")
+        self.assertEqual(result["root_cause"], "COMPUTATION_AND_COMMUNICATION_SLOW")
+
     def test_ring_topology_does_not_treat_duration_jitter_as_bad_links(self):
         rows = []
         for rank in range(4):

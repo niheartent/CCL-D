@@ -31,6 +31,10 @@ def _root_cause(status, *, ranks=None, missing_ranks=None, incomplete_ranks=None
         cause, confidence, affected = "COLLECTIVE_DID_NOT_COMPLETE", "high", incomplete_ranks or missing_ranks
     elif status in ("COMM_SLOW", "COMM_SLOW_WINDOW", "COMM_STALLED"):
         cause, confidence, affected = "COMMUNICATION_PROGRESS_SLOW", "medium", slow_ranks
+    elif status == "COMPUTATION_SLOW":
+        cause, confidence, affected = "COMPUTATION_STEP_SLOW", "medium", slow_ranks
+    elif status == "MIXED_SLOW":
+        cause, confidence, affected = "COMPUTATION_AND_COMMUNICATION_SLOW", "medium", slow_ranks
     elif status in ("RING_ASYMMETRY", "TREE_ASYMMETRY"):
         cause, confidence, affected = "TOPOLOGY_PROGRESS_ASYMMETRY", "medium", ranks
     elif status == "COUNT_MISMATCH":
@@ -281,7 +285,7 @@ def analyze_operation_semantics(records):
     return results
 
 def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
-                        timeout_ms=2000):
+                        timeout_ms=2000, step_skew_ms=2):
     """Aggregate completion records and detect missing completion/count/rate outliers.
 
     ``start_timestamp`` and ``end_timestamp`` are device clock ticks emitted by
@@ -565,6 +569,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
         usable_recv_rates = [v["recv_rate"] for v in by_rank.values()
                              if v["recv_rate"] is not None and v["recv_rate"] > 0]
         slow_ranks = []
+        slow_diagnosis = None
         # A one-way zero can be a valid role/topology property (for example,
         # the broadcast root). Compare directions independently and diagnose
         # only when every participating rank has evidence in both directions.
@@ -575,6 +580,34 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
             slow_ranks = sorted(rank for rank, value in by_rank.items()
                                 if value["send_rate"] < send_baseline * slow_rate_ratio or
                                 value["recv_rate"] < recv_baseline * slow_rate_ratio)
+            if slow_ranks:
+                # AntCCL separates host/step desynchronization from a
+                # communication-rate anomaly.  Device clocks are only
+                # compared within one node; cross-node start timestamps are
+                # deliberately excluded because they are not synchronized.
+                same_node = nnodes <= 1
+                starts = [v["start_timestamp"] for v in by_rank.values()
+                          if v["start_timestamp"] is not None]
+                start_skew = (max(starts) - min(starts)) if starts else 0
+                compute_slow = same_node and start_skew > 2_000_000
+                slow_diagnosis = ("MIXED" if compute_slow else "COMMUNICATION_SLOW")
+        # AntCCL's first slow branch is step consistency.  Only use device
+        # start timestamps when all ranks are on one node; cross-node clocks
+        # are not a valid ordering source.  The shortest collective duration
+        # identifies the compute-slow root in the documented case.
+        start_values = [v["start_timestamp"] for v in by_rank.values()
+                        if v["start_timestamp"] is not None]
+        step_skew = (max(start_values) - min(start_values)) if start_values else 0
+        compute_root = []
+        if nnodes <= 1 and step_skew >= int(step_skew_ms * 1_000_000):
+            durations = [(rank, v["duration"]) for rank, v in by_rank.items()
+                         if v["duration"] is not None]
+            if durations:
+                minimum = min(value for _, value in durations)
+                compute_root = sorted(rank for rank, value in durations
+                                      if value == minimum)
+            slow_diagnosis = ("MIXED" if slow_diagnosis in ("COMMUNICATION_SLOW", "MIXED")
+                              else "COMPUTATION_SLOW")
         topology_fault = topology_analysis["status"] in ("RING_ASYMMETRY", "TREE_ASYMMETRY")
         complete_ranks = set(by_rank)
         enqueued_ranks = {int(row.get("rank", -1)) for row in enqueue_rows}
@@ -582,7 +615,10 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
         incomplete = sorted(set(incomplete))
         missing_completion = sorted(enqueued_ranks - complete_ranks)
         missing = sorted(set(missing) | set(missing_completion))
+        diagnosed_slow = sorted(set(slow_ranks) | set(compute_root))
         status = ("MISSING_COMPLETION" if missing or incomplete else
+            "MIXED_SLOW" if slow_diagnosis == "MIXED" else
+            "COMPUTATION_SLOW" if slow_diagnosis == "COMPUTATION_SLOW" else
             "COMM_SLOW" if slow_ranks else
             topology_analysis["status"] if topology_fault else
             "COUNT_MISMATCH" if count_mismatch and not topology_pending else
@@ -602,8 +638,10 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
         result = {"comm_id": comm_id, "counter": counter, "status": status,
                         "ranks": ranks, "expected_ranks": list(range(expected)),
                         "missing_ranks": missing, "incomplete_ranks": incomplete,
-                        "slow_ranks": slow_ranks, "send_counts": send_values,
+                        "slow_ranks": diagnosed_slow, "send_counts": send_values,
                         "recv_counts": recv_values, "per_rank": dict(by_rank),
+                        "slow_diagnosis": slow_diagnosis,
+                        "step_skew_ms": round(step_skew / 1_000_000, 3),
                         "op_counts": op_counts,
                         "topology_edges": topology_edges,
                         "topology_groups": topology_groups,
@@ -613,7 +651,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
                         "nnodes": nnodes,
                         "records": len(rows)}
         result.update(_root_cause(status, ranks=ranks, missing_ranks=missing,
-                                  incomplete_ranks=incomplete, slow_ranks=slow_ranks,
+                                  incomplete_ranks=incomplete, slow_ranks=diagnosed_slow,
                                   topology_analysis=topology_analysis,
                                   per_rank=by_rank, send_counts=send_values,
                                   recv_counts=recv_values,

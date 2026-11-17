@@ -33,7 +33,7 @@
 
 材料要求的顺序是：任务 trace 是否超过基线 → 获取 rank trace → 判断步调是否一致 → 判断 sendRate/recvRate 是否一致 → 区分计算慢、通信慢和混合场景。
 
-当前 analyzer 有 enqueue skew、completion duration、rate ratio 和窗口规则，但没有按这条顺序形成统一决策结果，也没有把 host 调用前计算慢与设备通信循环慢区分为材料定义的两类。因此 slow 决策树未完成。
+当前 analyzer 已按该顺序保留告警、步调偏差、收发速率比较，并输出 `COMPUTATION_SLOW`、`COMM_SLOW`、`MIXED_SLOW` 及证据字段；跨节点不使用未同步时钟比较。仍需用材料 5.1 的真实注入场景进行端到端验收。
 
 ### hang
 
