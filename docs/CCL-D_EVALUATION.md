@@ -52,8 +52,8 @@
 | 故障分析流程 | 已完成 | missing、progress stalled、collective incomplete 分支均有输出 |
 | 训练耗时影响 ≤1% | 未测 | 当前是通信回归程序，没有 LLM 训练 baseline/enable 对照 |
 | 模型精度影响 ≤1% | 未测 | 尚未接入真实训练任务和 loss 曲线对照 |
-| CPU/pinned memory/GPU 资源开销 | 部分已测 | RCCL 观测数据已验证容量和丢失策略；尚未采集训练级 CPU、pinned memory 峰值和 GPU kernel 开销 |
-| 同一 group 多 work 并发 | 待测 | 当前压力程序每个算子后同步，需增加 grouped work 场景 |
+| CPU/pinned memory/GPU 资源开销 | 部分已测 | 采样区 CPU、共享线程 CPU、frame 字节和 HIP event 探针已工作；短消息微基准显示端到端有开销，训练级开销与纯 kernel 开销仍未测 |
+| 同一 group 多 work 并发 | 已完成核心路径回归 | 最终 callback 快照版本下 256 works × 2、512 slots、8 rank 全部完成，dropped=0；覆盖 AllReduce 与混合 P2P |
 
 ## 4. 下一步验收
 
@@ -67,20 +67,15 @@
 |---|---|---|
 | 64 works × 2，512 slots | PASS，errors=0 | 每 rank 132 个 operation counter，dropped=0 |
 | 128 works × 2，512 slots | PASS，errors=0 | 每 rank 260 个 operation counter，dropped=0 |
-| 256 works × 2，512 slots | PASS，errors=0 | 产生 516 个 operation；部分 rank 各丢 4 条，原因是同时在用的记录超过 512 slots |
+| 256 works × 2，512 slots（最终 callback 快照版本） | PASS，errors=0 | 4,704 条 complete、16 条 resource、每 rank 516 个 counter，dropped=0 |
 | 256 works × 2，1024 slots | PASS，errors=0 | 4,704 条 complete，16 条 resource，dropped=0，每 rank 516 个 counter |
 
-512-slot 容量边界证明了资源保护语义：观测记录不足时显式标记丢失，通信继续完成；1024 slots 回归证明多 plan、混合 P2P 和连续 group 在容量足够时可以完成并回收。该测试不是训练性能结论。
+早期实现中 callback 只排队完成事件，后台轮询前 slot 未释放，导致第二轮出现假性容量耗尽；最终实现由 callback 快照并释放 slot 后，这个 512-slot 回归恢复为无丢失。该测试不是训练性能结论。
 
 程序同时输出 `/proc/self/status` 的 `VmPin` 前后读数，作为 pinned memory 交叉探针；容器和 UCX 初始化本身会改变 VmPin，因此必须结合 JSONL 中 `frame_pinned_bytes = 2144 × slots` 解读，不能把单次 VmPin 差值直接归因于 CCL-D。
 
 ## 6. 设备时间微基准
 
-同一 grouped-work 程序用 HIP event 包住 group 的设备 stream，warmup 后取 9 次样本。64 works、4096 元素、8 rank 的结果为：
+HIP event 微基准最终版本的 off/on 配对结果（9 次非 warmup 样本）为：4096 元素时均值 1.180651/2.144755 ms；65536 元素时 7.368763/8.821697 ms。两组通信校验均通过。诊断开销随消息变大而相对下降，但仍不能宣称 GPU 零开销；还需用 profiler 拆分 kernel 计数、host callback 和后台线程部分。
 
-| 模式 | mean | P50 | P95 |
-|---|---:|---:|---:|
-| CCL-D off | 1.233690 ms | 1.350401 ms | 1.413281 ms |
-| CCL-D on | 2.354134 ms | 2.596480 ms | 2.832640 ms |
-
-这是短消息、短 group 的端到端 stream 时间，包含 host callback 和诊断记录处理，不能直接当成 GPU kernel 插桩开销，也不能外推到训练任务。正式性能验收仍需按 AntCCL 口径使用相同 workload 的 warmup、更多样本和大消息配对测量，并单独区分 GPU kernel 时间、host callback 时间和诊断线程 CPU 时间。
+该计时覆盖 grouped operation 的设备 stream，不等同于纯 GPU kernel 插桩开销，也不能外推到训练任务。后续应使用更多重复和 profiler 拆分 kernel 与 host callback 时间。

@@ -14,6 +14,7 @@
 #include <limits>
 #include <mutex>
 #include <memory>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -37,6 +38,7 @@ struct OperationInfo {
   uint64_t opCount = 0;
   std::string op;
   std::set<uint16_t> channels;
+  std::map<uint16_t, std::pair<uint64_t, uint64_t>> finalCounts;
 };
 struct SamplePrevious { uint64_t timestamp, send, recv; };
 std::unordered_map<const ncclComm*, std::unordered_map<uint64_t, OperationInfo>> g_operations;
@@ -195,23 +197,20 @@ void rcclCcldRegisterPlanCounter(struct ncclKernelPlan* plan, uint64_t counter) 
 }
 
 static void writeCompletedDiagnostics(const struct ncclComm* comm, const CompletedEvent* events, size_t count) {
-  if (!comm || !enabled() || !comm->ccldDiag || !events) return;
+  if (!comm || !enabled() || !events) return;
   std::lock_guard<std::mutex> guard(g_lock);
   init(comm);
-  auto pool = g_pools.find(comm);
   auto ops = g_operations.find(comm);
-  if (pool == g_pools.end() || ops == g_operations.end()) return;
+  if (ops == g_operations.end()) return;
   for (size_t i = 0; i < count; ++i) {
     const uint64_t counter = events[i].counter;
-    uint32_t blockIndex = UINT32_MAX;
-    if (!pool->second->find(counter, &blockIndex)) continue;
     auto opIt = ops->second.find(counter);
     if (opIt == ops->second.end()) continue;
-    struct ncclCcldDiag* block = comm->ccldDiag + blockIndex;
-    if (block->header.counter != counter || block->header.mode == 0) continue;
     const uint64_t finishNs = events[i].finishNs;
-    for (uint16_t channel : opIt->second.channels) {
-      const rccl_ccld::ChannelBody& body = block->channels[channel];
+    for (const auto& channelEntry : opIt->second.finalCounts) {
+      const uint16_t channel = channelEntry.first;
+      const uint64_t sendCount = channelEntry.second.first;
+      const uint64_t recvCount = channelEntry.second.second;
     g_log << "{\"schema\":1,\"phase\":\"complete\",\"timestamp_ns\":" << finishNs
           << ",\"timestamp_wall_ns\":" << events[i].finishWallNs
             << ",\"trace_id\":\"" << std::hex << comm->commHash << ':' << std::dec << counter
@@ -224,7 +223,7 @@ static void writeCompletedDiagnostics(const struct ncclComm* comm, const Complet
             << ",\"root\":" << opIt->second.root << ",\"channel\":" << channel
             << ",\"algorithm\":" << opIt->second.algorithm
             << ",\"protocol\":" << opIt->second.protocol
-            << ",\"send_count\":" << body.sendCount << ",\"recv_count\":" << body.recvCount
+            << ",\"send_count\":" << sendCount << ",\"recv_count\":" << recvCount
             << ",\"start_timestamp\":" << opIt->second.startNs
             << ",\"end_timestamp\":" << finishNs
             << ",\"duration_ns\":" << (finishNs - opIt->second.startNs)
@@ -241,15 +240,7 @@ static void writeCompletedDiagnostics(const struct ncclComm* comm, const Complet
       g_log << "}\n";
     }
     g_log.flush();
-    block->header.mode = 0;
     ops->second.erase(opIt);
-    const std::string prefix = std::to_string(reinterpret_cast<uintptr_t>(comm)) + ":" +
-                               std::to_string(counter) + ":";
-    for (auto sample = g_samplePrevious.begin(); sample != g_samplePrevious.end();) {
-      if (sample->first.compare(0, prefix.size(), prefix) == 0) sample = g_samplePrevious.erase(sample);
-      else ++sample;
-    }
-    pool->second->release(counter);
   }
 }
 
@@ -258,9 +249,34 @@ void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm, const uint64_t* co
   const uint64_t finish = nowNs();
   const uint64_t finishWall = wallNs();
   std::lock_guard<std::mutex> guard(g_lock);
+  auto pool = g_pools.find(comm);
+  auto ops = g_operations.find(comm);
+  if (pool == g_pools.end() || ops == g_operations.end() || !comm->ccldDiag) return;
   std::vector<CompletedEvent>& pending = g_completed[comm];
-  for (size_t i = 0; i < count; ++i)
+  for (size_t i = 0; i < count; ++i) {
+    uint32_t blockIndex = UINT32_MAX;
+    if (!pool->second->find(counters[i], &blockIndex)) continue;
+    auto opIt = ops->second.find(counters[i]);
+    if (opIt == ops->second.end()) continue;
+    struct ncclCcldDiag* block = comm->ccldDiag + blockIndex;
+    if (block->header.counter != counters[i] || block->header.mode == 0) continue;
+    for (uint16_t channel : opIt->second.channels) {
+      const rccl_ccld::ChannelBody& body = block->channels[channel];
+      opIt->second.finalCounts[channel] = std::make_pair(body.sendCount, body.recvCount);
+    }
+    // The callback is ordered after all work that can update this body. Copy
+    // the final counts before releasing the block; the polling thread only
+    // needs the host snapshot to serialize the JSON record later.
+    block->header.mode = 0;
+    pool->second->release(counters[i]);
+    const std::string prefix = std::to_string(reinterpret_cast<uintptr_t>(comm)) + ":" +
+                               std::to_string(counters[i]) + ":";
+    for (auto sample = g_samplePrevious.begin(); sample != g_samplePrevious.end();) {
+      if (sample->first.compare(0, prefix.size(), prefix) == 0) sample = g_samplePrevious.erase(sample);
+      else ++sample;
+    }
     pending.push_back(CompletedEvent{counters[i], finish, finishWall});
+  }
 }
 
 void rcclCcldDrainDiagnostics(const struct ncclComm* comm) {

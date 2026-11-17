@@ -44,7 +44,7 @@
 
 ## 4. 同一 group 内多 work 并发
 
-**当前情况**：RCCL planner 已将多个 plan 的 CCL-D counter 收集到统一 finalize callback。原实现只排队完成事件，由周期线程稍后 drain；双节点 256×2、512 slots 时少数 rank 在下一轮开始前未及时释放已完成 slot，产生 4 条误丢观测。现已改成 stream-ordered completion callback 立即 drain 完成记录并释放 slot，同时继续遵守容量不足时丢观测、通信继续的保护策略；新版本正在编译，待回归确认 256×2、512 slots 下的修复结果。
+**当前情况**：RCCL planner 已将多个 plan 的 CCL-D counter 收集到统一 finalize callback。原实现只排队完成事件，由周期线程稍后 drain；双节点 256×2、512 slots 时少数 rank 在下一轮开始前未及时释放已完成 slot，产生 4 条误丢观测。现实现为 stream-ordered callback 快照最终计数并立即释放 slot，后台线程再写日志；代码已编译安装，256×2、512 slots 回归通过，dropped=0。容量小于同时运行的 work 数时仍按设计丢观测并继续通信。
 
 **实现测试程序**：
 
