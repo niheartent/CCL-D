@@ -34,7 +34,7 @@
 
 材料要求的顺序是：任务 trace 是否超过基线 → 获取 rank trace → 判断步调是否一致 → 判断 sendRate/recvRate 是否一致 → 区分计算慢、通信慢和混合场景。
 
-当前 analyzer 已按该顺序保留告警、步调偏差、收发速率比较，并输出 `COMPUTATION_SLOW`、`COMM_SLOW`、`MIXED_SLOW` 及证据字段；跨节点不使用未同步时钟比较。仍需用材料 5.1 的真实注入场景进行端到端验收。
+当前 analyzer 按该顺序使用采样增量判断收发步调：Ring 使用全 rank 分组，Tree 使用同 channel、同层级、同父子角色分组；计算慢阈值复用 `step_skew_ms` 参数，不再固定写死 2 ms。跨节点不使用未同步时钟比较。仍需用材料 5.1 的真实注入场景进行端到端验收。
 
 ### hang
 
@@ -67,5 +67,5 @@
 
 - TraceID 的 44-byte 区域只是预留存储区；当前布局正确。counter 已改为通信域内集合操作的统一 `opCount`，RecordPool 不再生成身份；grouped P2P 的多个 Send/Recv 复用同一父 counter。该模块仍需在编译后用多 rank grouped P2P 验证跨 rank 一致性。
 - 采样输出已删除不符合材料语义的 `send_rate_Bps/recv_rate_Bps` 字段，改为固定采样周期内的 `send_rate/recv_rate` 原始计数增量，并将按时间换算的值单独命名为 `send_frequency_hz/recv_frequency_hz`。分析器现已只使用这些采样增量做 slow 判定；没有采样证据时不再用 complete duration 伪造通信速率。
-- slow 决策树的顺序已部分体现，但 hang 决策树尚未完整实现“未进入、部分完成、全部进入且都 hang、同算法同位置计数比较、非通信 hang”五个分支。
+- slow 决策树已按 Ring/Tree 拓扑位置使用采样增量比较；真实计算慢和通信慢注入仍需运行验收。
 - `algorithm_bandwidth_Bps` 的计算公式是实现自行选择的 RCCL bus-bandwidth 倍率，材料没有给出该公式；在没有运行数据核对前只能标为待验收。

@@ -446,6 +446,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
                                    "records": item["records"]})
         topology_analysis = {"status": "NO_TOPOLOGY"}
         topology_count_fault_ranks = set()
+        topology_compare_groups = []
         # RCCL enum values: Tree=0, Ring=1.  Collective completion counters
         # are channel aggregates, not per-edge counts; use actual topology
         # links for structure and per-rank/channel rates for performance.
@@ -490,6 +491,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
                     if bad:
                         asymmetric.append(channel)
                     else:
+                        topology_compare_groups.append(sorted(by_rank_row))
                         counts = defaultdict(lambda: [0, 0])
                         for row in channel_rows:
                             counts[int(row["rank"])][0] += int(row.get("send_count", 0))
@@ -573,6 +575,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
                             "recv_rate": (int(row.get("recv_count", 0)) / duration
                                            if duration > 0 else None)})
                 for members in by_level.values():
+                    topology_compare_groups.append(sorted(m["rank"] for m in members))
                     if len(members) < 2:
                         continue
                     values = [(m["send_count"], m["recv_count"]) for m in members]
@@ -626,13 +629,22 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
         # A one-way zero can be a valid role/topology property (for example,
         # the broadcast root). Compare directions independently and diagnose
         # only when every participating rank has evidence in both directions.
-        if not tree_rows and (len(usable_send_rates) == len(by_rank) and
-                len(usable_recv_rates) == len(by_rank) and len(by_rank) >= 2):
-            send_baseline = sorted(usable_send_rates)[len(usable_send_rates) // 2]
-            recv_baseline = sorted(usable_recv_rates)[len(usable_recv_rates) // 2]
-            slow_ranks = sorted(rank for rank, value in by_rank.items()
-                                if value[rate_send_key] < send_baseline * slow_rate_ratio or
-                                value[rate_recv_key] < recv_baseline * slow_rate_ratio)
+        if not topology_compare_groups and not tree_rows and len(by_rank) >= 2:
+            topology_compare_groups.append(sorted(by_rank))
+        for group in topology_compare_groups:
+            if len(group) < 2 or any(rank not in by_rank for rank in group):
+                continue
+            group_send = [by_rank[rank][rate_send_key] for rank in group]
+            group_recv = [by_rank[rank][rate_recv_key] for rank in group]
+            if any(value is None or value <= 0 for value in group_send + group_recv):
+                continue
+            send_baseline = sorted(group_send)[len(group_send) // 2]
+            recv_baseline = sorted(group_recv)[len(group_recv) // 2]
+            slow_ranks.extend(rank for rank in group
+                              if by_rank[rank][rate_send_key] < send_baseline * slow_rate_ratio or
+                              by_rank[rank][rate_recv_key] < recv_baseline * slow_rate_ratio)
+        slow_ranks = sorted(set(slow_ranks))
+        if slow_ranks:
             if slow_ranks:
                 # AntCCL separates host/step desynchronization from a
                 # communication-rate anomaly.  Device clocks are only
@@ -642,7 +654,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
                 starts = [v["start_timestamp"] for v in by_rank.values()
                           if v["start_timestamp"] is not None]
                 start_skew = (max(starts) - min(starts)) if starts else 0
-                compute_slow = same_node and start_skew > 2_000_000
+                compute_slow = same_node and start_skew >= int(step_skew_ms * 1_000_000)
                 slow_diagnosis = ("MIXED" if compute_slow else "COMMUNICATION_SLOW")
         # AntCCL's first slow branch is step consistency.  Only use device
         # start timestamps when all ranks are on one node; cross-node clocks
