@@ -112,11 +112,14 @@ uint64_t elapsedTimespecNs(const struct timespec& begin, const struct timespec& 
 }
 
 double algorithmBandwidthFactor(const std::string& op, int nranks) {
-  if (nranks <= 0) return 1.0;
-  if (op == "AllReduce") return 2.0 * static_cast<double>(nranks - 1) / nranks;
-  if (op == "AllGather" || op == "ReduceScatter")
-    return static_cast<double>(nranks - 1) / nranks;
-  return 1.0;
+  if (nranks <= 0) return 0.0;
+  const double peerFactor = static_cast<double>(nranks - 1) / nranks;
+  if (op == "AllReduce" || op == "Reduce") return 2.0 * peerFactor;
+  if (op == "AllGather" || op == "ReduceScatter" ||
+      op == "Broadcast" || op == "AllToAll") return peerFactor;
+  // P2P has one sender/receiver edge; MIXED is a grouped P2P parent.
+  if (op == "Send" || op == "Recv" || op == "P2P" || op == "MIXED") return 1.0;
+  return 0.0;
 }
 
 void* diagnosticThreadMain(void* arg) {

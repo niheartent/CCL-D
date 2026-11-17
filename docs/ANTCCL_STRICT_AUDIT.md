@@ -68,4 +68,4 @@
 - TraceID 的 44-byte 区域只是预留存储区；当前布局正确。counter 已改为通信域内集合操作的统一 `opCount`，RecordPool 不再生成身份；grouped P2P 的多个 Send/Recv 复用同一父 counter。该模块仍需在编译后用多 rank grouped P2P 验证跨 rank 一致性。
 - 采样输出已删除不符合材料语义的 `send_rate_Bps/recv_rate_Bps` 字段，改为固定采样周期内的 `send_rate/recv_rate` 原始计数增量，并将按时间换算的值单独命名为 `send_frequency_hz/recv_frequency_hz`。分析器现已只使用这些采样增量做 slow 判定；没有采样证据时不再用 complete duration 伪造通信速率。
 - slow 决策树已按 Ring/Tree 拓扑位置使用采样增量比较；真实计算慢和通信慢注入仍需运行验收。
-- `algorithm_bandwidth_Bps` 的计算公式是实现自行选择的 RCCL bus-bandwidth 倍率，材料没有给出该公式；在没有运行数据核对前只能标为待验收。
+- `algorithm_bandwidth_Bps` 现按 nccl-tests bus-bandwidth factor 覆盖 AllReduce/Reduce、AllGather/ReduceScatter、Broadcast、AllToAll 和 P2P；未知操作返回 0，不再用无依据的默认 factor=1。仍需运行数据核对单位和数值。
