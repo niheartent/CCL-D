@@ -299,7 +299,7 @@ class CcldAnalyzeTest(unittest.TestCase):
         result = analyze_completions(rows)[0]
         self.assertEqual(result["topology_analysis"]["status"], "RING_ASYMMETRY")
 
-    def test_ring_count_rate_outlier_is_slow_not_topology_fault(self):
+    def test_ring_count_mismatch_identifies_fault_rank(self):
         rows = []
         for rank, peer, count in ((0, 1, 8), (1, 0, 2)):
             rows.append({"phase": "complete", "comm_id": "abcd", "counter": 12,
@@ -313,7 +313,8 @@ class CcldAnalyzeTest(unittest.TestCase):
                     for rank, count in ((0, 8), (1, 2)))
         result = analyze_completions(rows)[0]
         self.assertEqual(result["topology_analysis"]["status"], "RING_SYMMETRIC")
-        self.assertEqual(result["status"], "COMM_SLOW")
+        self.assertEqual(result["status"], "COUNT_MISMATCH")
+        self.assertEqual(result["count_mismatch_ranks"], [1])
 
     def test_slow_tree_marks_compute_step_and_shortest_collective(self):
         rows = []

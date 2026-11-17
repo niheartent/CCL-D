@@ -40,7 +40,7 @@
 
 材料要求的顺序是：是否存在未进入 collective 的 rank → 是否存在进入但未 hang 的 rank → 是否所有 rank 都进入且都 hang → 对同算法同位置 rank 比较收发次数定位首错。
 
-当前 analyzer 能报告 missing、incomplete、部分 count mismatch，但没有完成按算法拓扑位置比较收发次数的统一根因路径，也没有非通信 hang 的明确结果分支。因此 hang 决策树未完成。
+当前 analyzer 已将 Ring 按 channel、Tree 按 channel+层级+父子角色聚合，并在同等位置比较 send/recv 总数，输出 `count_mismatch_ranks` 和 `COUNT_MISMATCH`。仍没有完成“collective 完成后发生非通信 hang”的明确结果分支，因此 hang 决策树仍未整体完成。
 
 ## 功能评测核对
 

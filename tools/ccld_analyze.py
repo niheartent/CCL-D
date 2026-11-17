@@ -434,6 +434,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
                                                   if duration else None),
                                    "records": item["records"]})
         topology_analysis = {"status": "NO_TOPOLOGY"}
+        topology_count_fault_ranks = set()
         # RCCL enum values: Tree=0, Ring=1.  Collective completion counters
         # are channel aggregates, not per-edge counts; use actual topology
         # links for structure and per-rank/channel rates for performance.
@@ -477,6 +478,16 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
                                   for rank, (prev, nxt) in by_rank_row.items())
                     if bad:
                         asymmetric.append(channel)
+                    else:
+                        counts = defaultdict(lambda: [0, 0])
+                        for row in channel_rows:
+                            counts[int(row["rank"])][0] += int(row.get("send_count", 0))
+                            counts[int(row["rank"])][1] += int(row.get("recv_count", 0))
+                        values = list(counts.values())
+                        if values:
+                            common = sorted(map(tuple, values))[len(values) // 2]
+                            topology_count_fault_ranks.update(
+                                rank for rank, value in counts.items() if tuple(value) != common)
                 topology_status = ("RING_ASYMMETRY" if asymmetric else
                                    "RING_TOPOLOGY_PENDING" if pending else "RING_SYMMETRIC")
                 topology_analysis = {"status": topology_status,
@@ -542,11 +553,22 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
                         role = (int(int(row["tree_up"]) >= 0), len(children[rank]))
                         start, end = row.get("start_timestamp"), row.get("end_timestamp")
                         duration = int(end) - int(start) if start is not None and end is not None else 0
-                        if duration > 0:
-                            by_level[(channel, depth, role)].append({
-                                "rank": rank,
-                                "send_rate": int(row.get("send_count", 0)) / duration,
-                                "recv_rate": int(row.get("recv_count", 0)) / duration})
+                        by_level[(channel, depth, role)].append({
+                            "rank": rank,
+                            "send_count": int(row.get("send_count", 0)),
+                            "recv_count": int(row.get("recv_count", 0)),
+                            "send_rate": (int(row.get("send_count", 0)) / duration
+                                           if duration > 0 else None),
+                            "recv_rate": (int(row.get("recv_count", 0)) / duration
+                                           if duration > 0 else None)})
+                for members in by_level.values():
+                    if len(members) < 2:
+                        continue
+                    values = [(m["send_count"], m["recv_count"]) for m in members]
+                    common = sorted(values)[len(values) // 2]
+                    topology_count_fault_ranks.update(
+                        m["rank"] for m in members
+                        if (m["send_count"], m["recv_count"]) != common)
                 topology_analysis = {"status": "TREE_ASYMMETRY" if asymmetric else "TREE_SYMMETRIC",
                                      "channel_depths": [
                                          {"channel": c, "depth": d, "parent": role[0],
@@ -563,13 +585,7 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
         # aggregate send counts therefore differ by rank by design.
         if operations == {"Broadcast"}:
             count_mismatch = False
-        # Device counters are currently channel aggregates.  Even ring
-        # collectives can legitimately produce different per-rank totals
-        # (the number of local send/recv edges depends on the selected
-        # channel/topology).  Until edge/peer metadata is emitted, do not
-        # turn such a difference into a false fault.  Synthetic records that
-        # omit algorithm metadata ([-1]) retain the strict mismatch check.
-        topology_pending = count_mismatch and (
+        topology_pending = count_mismatch and not topology_count_fault_ranks and (
             nnodes > 1 or any(a != -1 for a in algorithms))
         incomplete = sorted(rank for rank, value in by_rank.items() if not value["complete"])
         for value in by_rank.values():
@@ -645,9 +661,9 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
         status = ("MISSING_COMPLETION" if missing or incomplete else
             "MIXED_SLOW" if slow_diagnosis == "MIXED" else
             "COMPUTATION_SLOW" if slow_diagnosis == "COMPUTATION_SLOW" else
+            "COUNT_MISMATCH" if (count_mismatch and not topology_pending) else
             "COMM_SLOW" if slow_ranks else
             topology_analysis["status"] if topology_fault else
-            "COUNT_MISMATCH" if count_mismatch and not topology_pending else
             "TOPOLOGY_PENDING" if topology_pending else
             "OK")
         if (enqueue_rows and (missing or incomplete) and not incomplete):
@@ -671,12 +687,17 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
                         "op_counts": op_counts,
                         "topology_edges": topology_edges,
                         "topology_groups": topology_groups,
+                        "count_mismatch_ranks": sorted(topology_count_fault_ranks),
                         "topology_ready": bool(topology_groups) and len(topology_groups) == len(rows),
                         "topology_analysis": topology_analysis,
                         "algorithms": algorithms, "protocols": protocols,
                         "nnodes": nnodes,
                         "records": len(rows)}
-        result.update(_root_cause(status, ranks=ranks, missing_ranks=missing,
+        result.update(_root_cause(status,
+                                  ranks=(sorted(topology_count_fault_ranks)
+                                         if status == "COUNT_MISMATCH" and topology_count_fault_ranks
+                                         else ranks),
+                                  missing_ranks=missing,
                                   incomplete_ranks=incomplete, slow_ranks=diagnosed_slow,
                                   topology_analysis=topology_analysis,
                                   per_rank=by_rank, send_counts=send_values,
