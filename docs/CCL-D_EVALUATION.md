@@ -28,7 +28,7 @@
 |---|---|
 | 节点 | HPDPS-6、HPDPS-7；每节点 4 rank，共 8 rank |
 | GPU/软件 | gfx936；DTK 26.04；独立 RCCL 安装前缀；UCX `/opt/ucx-1.16.0` |
-| 诊断容量 | `RCCL_CCLD_ENABLE=1`、`RCCL_CCLD_SLOTS=512`、采样周期 20 ms |
+| 诊断容量 | `RCCL_CCLD_ENABLE=1`、`RCCL_CCLD_SLOTS=512`、`RCCL_CCLD_SAMPLE_US=1000`（采样周期可运行时调整） |
 | 正常回归 | AllGather、ReduceScatter、Broadcast、AllToAll、P2P；`CCLD_ITERS=100`、`CCLD_COUNT=4096` |
 | 故障回归 | rank 2 注入 slow（stream 延迟 2 s）、missing（不进入 collective）、stall（stream 等待 30 s） |
 | 原始证据 | 每 rank RCCL JSONL、monitor 输出、设备结果校验；所有运行目录保存在 `rccl-artifacts/ccld-frame-gfx936/` |

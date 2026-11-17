@@ -237,9 +237,13 @@ void NCCL_NO_OPTIMIZE commPoison(ncclComm_t comm) {
 
 RCCL_PARAM(KernelCollTraceEnable, "KERNEL_COLL_TRACE_ENABLE", 0);
 RCCL_PARAM(KernelCollTraceThreadEnable, "KERNEL_COLL_TRACE_THREAD_ENABLE", 0);
-RCCL_PARAM(CcldSampleUs, "CCLD_SAMPLE_US", 200);
+RCCL_PARAM(CcldEnable, "CCLD_ENABLE", 0);
+// AntCCL's reference sampling precision is 1 ms. Keep it runtime-configurable
+// while using the documented precision as the default.
+RCCL_PARAM(CcldSampleUs, "CCLD_SAMPLE_US", 1000);
 RCCL_PARAM(CcldDiagSlots, "CCLD_SLOTS", 16);
 RCCL_PARAM(CcldDiagMode, "CCLD_MODE", 1);
+RCCL_PARAM(CcldPlanCounterInitial, "CCLD_PLAN_COUNTER_INITIAL", 8);
 
 #ifdef ENABLE_COLLTRACE
 // Should be in sync with 'ALL_COLLS' in Generator.cmake

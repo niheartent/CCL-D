@@ -58,16 +58,12 @@ struct DiagnosticThreadState {
   pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
   bool stop = false;
   uint64_t notificationGeneration = 0;
-  uint64_t sampleIntervalNs = 200000;
+  uint64_t sampleIntervalNs = 0;
 };
 std::unordered_map<const ncclComm*, std::unique_ptr<DiagnosticThreadState>> g_threads;
 
 bool enabled() {
-  const char* value = std::getenv("RCCL_CCLD_ENABLE");
-  if (!(value && (std::string(value) == "1" || std::string(value) == "ON" || std::string(value) == "on"))) return false;
-  const char* mode = std::getenv("RCCL_CCLD_MODE");
-  if (mode && std::atoi(mode) == 0) return false;
-  return true;
+  return rcclParamCcldEnable() != 0 && rcclParamCcldDiagMode() != 0;
 }
 
 void replaceAll(std::string& value, const std::string& token, const std::string& replacement) {
@@ -184,7 +180,8 @@ bool rcclCcldStartThread(struct ncclComm* comm, uint64_t sampleIntervalNs) {
   if (g_threads.find(comm) != g_threads.end()) return true;
   auto state = std::make_unique<DiagnosticThreadState>();
   state->comm = comm;
-  state->sampleIntervalNs = sampleIntervalNs ? sampleIntervalNs : 200000;
+  state->sampleIntervalNs = sampleIntervalNs ? sampleIntervalNs :
+      static_cast<uint64_t>(rcclParamCcldSampleUs()) * 1000ULL;
   DiagnosticThreadState* raw = state.get();
   g_threads.emplace(comm, std::move(state));
   if (pthread_create(&raw->thread, nullptr, diagnosticThreadMain, raw) != 0) {
@@ -319,7 +316,10 @@ void rcclCcldRegisterPlanCounter(struct ncclKernelPlan* plan, uint64_t counter) 
   std::lock_guard<std::mutex> guard(g_lock);
   for (int i = 0; i < plan->ccldCounterCount; ++i) if (plan->ccldCounters[i] == counter) return;
   if (plan->ccldCounterCount == plan->ccldCounterCapacity) {
-    const int next = plan->ccldCounterCapacity ? plan->ccldCounterCapacity * 2 : 8;
+    const int64_t configuredInitial = rcclParamCcldPlanCounterInitial();
+    const int initial = configuredInitial > 0 && configuredInitial <= INT32_MAX
+        ? static_cast<int>(configuredInitial) : 1;
+    const int next = plan->ccldCounterCapacity ? plan->ccldCounterCapacity * 2 : initial;
     uint64_t* p = static_cast<uint64_t*>(std::realloc(plan->ccldCounters, sizeof(uint64_t) * next));
     if (!p) return;
     plan->ccldCounters = p; plan->ccldCounterCapacity = next;

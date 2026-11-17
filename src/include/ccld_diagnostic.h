@@ -5,6 +5,16 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include "param.h"
+
+// CCL-D runtime parameters are declared here so the diagnostic implementation
+// and communicator initialization use the same RCCL parameter cache.
+RCCL_PARAM_DECLARE(CcldEnable);
+RCCL_PARAM_DECLARE(CcldSampleUs);
+RCCL_PARAM_DECLARE(CcldDiagSlots);
+RCCL_PARAM_DECLARE(CcldDiagMode);
+RCCL_PARAM_DECLARE(CcldPlanCounterInitial);
+
 struct ncclInfo;
 struct ncclComm;
 struct ncclKernelPlan;

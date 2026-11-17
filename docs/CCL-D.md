@@ -24,6 +24,9 @@ export RCCL_CCLD_ENABLE=1
 export RCCL_CCLD_LOG=/workspace/CCL-D/results/rank-{rank}.jsonl
 export RCCL_CCLD_MODE=1
 export RCCL_CCLD_SLOTS=32
+export RCCL_CCLD_SAMPLE_US=1000
+# Optional host-side initial capacity for a plan's counter list.
+export RCCL_CCLD_PLAN_COUNTER_INITIAL=8
 python3 tools/ccld_monitor.py '/workspace/CCL-D/results/rank-*.jsonl' --once --all
 ```
 

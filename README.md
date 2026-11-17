@@ -46,7 +46,9 @@ cmake --install rccl-artifacts/ccld-frame-gfx936/build
 ```bash
 export RCCL_CCLD_ENABLE=1
 export RCCL_CCLD_SLOTS=512
-export RCCL_CCLD_SAMPLE_US=20000
+export RCCL_CCLD_SAMPLE_US=1000
+# Optional: initial host capacity for one plan's counter list (it grows as needed).
+export RCCL_CCLD_PLAN_COUNTER_INITIAL=8
 export RCCL_CCLD_LOG=/path/to/results/rank-{rank}.jsonl
 ```
 
