@@ -17,6 +17,8 @@ gfx936 独立构建已完成并安装到 `rccl-artifacts/ccld-frame-gfx936/insta
 
 双节点验收已完成：HPDPS-6/7 各 4 rank（共 8 rank），AllGather、ReduceScatter、Broadcast、AllToAll、P2P 全路径回归通过。`CCLD_ITERS=10 CCLD_COUNT=4096 RCCL_CCLD_SLOTS=512` 时 2,800 条 complete、2,705 条 sample，8 个 rank 均有记录，`OBSERVATION_DROPPED=0`，monitor 返回 0。`RCCL_CCLD_SLOTS=16` 的同一多节点回归中通信校验仍通过，但出现 197 条 `OBSERVATION_DROPPED`；增大运行时容量后丢失消失。
 
+当前环境延长压力回归已通过：`CCLD_ITERS=100 CCLD_COUNT=4096 RCCL_CCLD_SLOTS=512`，8 rank 每 rank 完成 3,500 条 channel complete 记录（合计 28,000），覆盖五类算子且通信数据检查通过；8 个 rank 均有记录，`OBSERVATION_DROPPED=0`，monitor 2,900 条结果全部 `OK`。该程序每个算子后同步，属于长迭代串行压力，不覆盖同一 group 内多个 work 并发。产物：`rccl-artifacts/ccld-frame-gfx936/multinode-stress-slots512-20261117T055324Z/`。
+
 对 slots512 的 290 条 monitor 结果重新分析后全部为 `OK`，此前由单次完成时长差异触发的 `COMM_SLOW` 已移除；Ring 中合法的单向收发角色不再被误判为慢 rank。
 
 验收产物：`rccl-artifacts/ccld-frame-gfx936/multinode-collectives-slots512-20261117T034442Z/`。
