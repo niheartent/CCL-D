@@ -1,6 +1,6 @@
 # CCL-D：集合通信诊断复现
 
-本仓库按脱敏参考材料的图文设计复现集合通信诊断：RCCL 记录 TraceID、channel 收发计数及通信状态，诊断线程周期计算速率，kernel 完成事件通知线程输出操作指标，分析器按 Ring 全 rank、Tree 同层 rank 诊断 slow/hang。数据结构与实现差距及精简路线见 [复现规格](docs/CCL-D.md)。
+本仓库按脱敏参考材料的图文设计复现集合通信诊断：RCCL 记录 TraceID、channel 收发计数及通信状态，诊断线程周期计算速率，kernel 完成事件通知线程输出操作指标，分析器按 Ring 全 rank、Tree 同层 rank 诊断 slow/hang。数据结构与诊断流程见 [复现规格](docs/CCL-D.md)。
 
 ## 环境
 

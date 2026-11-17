@@ -15,7 +15,7 @@ CCL-D 在 RCCL 通信路径记录 TraceID 和按 channel 的收发计数。kerne
 2. device kernel 按 block/channel 原子累加 send/recv。
 3. callback 只排队完成 counter；diagnose thread 只采样该 TraceID 已登记的 channel，写入 enqueue、sample、complete JSONL，然后释放 block。
 4. communicator destroy 前 drain 队列并回收诊断状态。
-5. analyzer 使用 host 进入状态、完成状态、开始/结束时间、send/recv rate，以及 Ring/Tree 拓扑位置做判断；时长显著离群时先定位最慢 rank，时长接近时比较收发速率；停滞判断按 `node/local_ranks/local_rank` 在节点内比较。
+5. analyzer 使用 host 进入状态、完成状态、开始/结束时间、send/recv rate，以及 Ring/Tree 拓扑位置做判断；slow 使用收发速率证据，停滞判断按 `node/local_ranks/local_rank` 在节点内比较。
 
 ## 运行时验证
 
