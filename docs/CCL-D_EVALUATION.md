@@ -73,3 +73,14 @@
 512-slot 容量边界证明了资源保护语义：观测记录不足时显式标记丢失，通信继续完成；1024 slots 回归证明多 plan、混合 P2P 和连续 group 在容量足够时可以完成并回收。该测试不是训练性能结论。
 
 程序同时输出 `/proc/self/status` 的 `VmPin` 前后读数，作为 pinned memory 交叉探针；容器和 UCX 初始化本身会改变 VmPin，因此必须结合 JSONL 中 `frame_pinned_bytes = 2144 × slots` 解读，不能把单次 VmPin 差值直接归因于 CCL-D。
+
+## 6. 设备时间微基准
+
+同一 grouped-work 程序用 HIP event 包住 group 的设备 stream，warmup 后取 9 次样本。64 works、4096 元素、8 rank 的结果为：
+
+| 模式 | mean | P50 | P95 |
+|---|---:|---:|---:|
+| CCL-D off | 1.233690 ms | 1.350401 ms | 1.413281 ms |
+| CCL-D on | 2.354134 ms | 2.596480 ms | 2.832640 ms |
+
+这是短消息、短 group 的端到端 stream 时间，包含 host callback 和诊断记录处理，不能直接当成 GPU kernel 插桩开销，也不能外推到训练任务。正式性能验收仍需按 AntCCL 口径使用相同 workload 的 warmup、更多样本和大消息配对测量，并单独区分 GPU kernel 时间、host callback 时间和诊断线程 CPU 时间。

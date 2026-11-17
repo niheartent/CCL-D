@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <algorithm>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -51,6 +53,9 @@ int main(int argc, char** argv) {
 
   hipStream_t stream;
   CHECK_HIP(hipStreamCreateWithFlags(&stream, hipStreamNonBlocking));
+  hipEvent_t eventStart, eventStop;
+  CHECK_HIP(hipEventCreate(&eventStart));
+  CHECK_HIP(hipEventCreate(&eventStop));
   float* grouped = nullptr;
   float* p2pSendRecv = nullptr;
   CHECK_HIP(hipMalloc(&grouped, groupWorks * count * sizeof(float)));
@@ -61,6 +66,7 @@ int main(int argc, char** argv) {
   const int sendPeer = (rank + 1) % nranks;
   const int recvPeer = (rank + nranks - 1) % nranks;
   int errors = 0;
+  std::vector<float> groupGpuMs;
 
   for (int iteration = 0; iteration < iterations; ++iteration) {
     // AllReduce writes the result back into the host staging buffer below.
@@ -70,6 +76,7 @@ int main(int argc, char** argv) {
     std::fill(p2pHost.begin(), p2pHost.end(), static_cast<float>(rank + 1));
     CHECK_HIP(hipMemcpyAsync(grouped, host.data(), host.size() * sizeof(float), hipMemcpyHostToDevice, stream));
     CHECK_HIP(hipMemcpyAsync(p2pSendRecv, p2pHost.data(), count * sizeof(float), hipMemcpyHostToDevice, stream));
+    CHECK_HIP(hipEventRecord(eventStart, stream));
     CHECK_RCCL(ncclGroupStart());
     for (int work = 0; work < groupWorks; ++work) {
       float* buffer = grouped + static_cast<size_t>(work) * count;
@@ -79,7 +86,13 @@ int main(int argc, char** argv) {
     CHECK_RCCL(ncclSend(p2pSendRecv, count, ncclFloat32, sendPeer, comm, stream));
     CHECK_RCCL(ncclRecv(p2pSendRecv + count, count, ncclFloat32, recvPeer, comm, stream));
     CHECK_RCCL(ncclGroupEnd());
+    CHECK_HIP(hipEventRecord(eventStop, stream));
     CHECK_HIP(hipStreamSynchronize(stream));
+    if (iteration > 0) {
+      float elapsedMs = 0.0f;
+      CHECK_HIP(hipEventElapsedTime(&elapsedMs, eventStart, eventStop));
+      groupGpuMs.push_back(elapsedMs);
+    }
     CHECK_HIP(hipMemcpy(host.data(), grouped, host.size() * sizeof(float), hipMemcpyDeviceToHost));
     CHECK_HIP(hipMemcpy(p2pHost.data(), p2pSendRecv + count, count * sizeof(float), hipMemcpyDeviceToHost));
     for (float value : host) if (value != expected) { ++errors; break; }
@@ -91,6 +104,14 @@ int main(int argc, char** argv) {
   if (rank == 0) {
     std::printf("grouped_work %s ranks=%d group_works=%d iterations=%d count=%zu mixed_p2p=1 errors=%d\n",
                 totalErrors == 0 ? "PASS" : "FAIL", nranks, groupWorks, iterations, count, totalErrors);
+    if (!groupGpuMs.empty()) {
+      std::sort(groupGpuMs.begin(), groupGpuMs.end());
+      const double mean = std::accumulate(groupGpuMs.begin(), groupGpuMs.end(), 0.0) / groupGpuMs.size();
+      const size_t p50 = (groupGpuMs.size() - 1) / 2;
+      const size_t p95 = (groupGpuMs.size() * 95 - 1) / 100;
+      std::printf("group_gpu_event_ms samples=%zu mean=%.6f p50=%.6f p95=%.6f\n",
+                  groupGpuMs.size(), mean, groupGpuMs[p50], groupGpuMs[p95]);
+    }
   }
   std::printf("resource_probe rank=%d vm_pin_before_kb=%ld vm_pin_after_init_kb=%ld vm_pin_delta_kb=%ld\n",
               rank, vmPinBeforeKb, vmPinAfterInitKb,
@@ -98,6 +119,8 @@ int main(int argc, char** argv) {
   CHECK_HIP(hipFree(grouped));
   CHECK_HIP(hipFree(p2pSendRecv));
   CHECK_HIP(hipStreamDestroy(stream));
+  CHECK_HIP(hipEventDestroy(eventStart));
+  CHECK_HIP(hipEventDestroy(eventStop));
   CHECK_RCCL(ncclCommDestroy(comm));
   CHECK_MPI(MPI_Finalize());
   return totalErrors == 0 ? 0 : 4;
