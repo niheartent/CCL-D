@@ -9,7 +9,7 @@
 | 生命周期 | enqueue 保留 block；kernel callback 排队 counter；diagnose thread 按已登记 channel 采样、输出后释放；destroy 时 drain | gfx936 双节点运行通过 |
 | 资源不足 | 没有可用 free block 时输出 `OBSERVATION_DROPPED`，通信继续，不覆盖 active block | analyzer 单测覆盖 |
 | Ring/Tree | 输出 Ring 邻居或 Tree parent/children/depth；Ring 全 rank、Tree 同层比较 | Ring、Tree 双节点运行通过；Tree 层级由 parent/children 重建，避免使用 kernel 级 depth 误判 |
-| slow/hang | 缺 rank、未完成、基于双向收发速率的异常、同节点停滞和拓扑不对称规则；不以单次完成时长差异直接判定 slow | 49 项单测及双节点 8-rank slow/missing/stall 故障矩阵通过 |
+| slow/hang | 缺 rank、未完成、基于双向收发速率的异常、同节点停滞和拓扑不对称规则；slow 输出计算慢/通信慢/混合慢分类，不以单次完成时长差异直接判定 slow | 51 项单测；既有双节点 slow/missing/stall 矩阵仍需用独立化新库重跑 |
 
 `RCCL_CCLD_SLOTS` 是运行时参数，默认值只用于初始化，可通过环境变量调整；代码不依赖固定 16 slot。通信观测只使用材料定义的 header、channel send/recv body 和生命周期事件，不加入 peer 字节矩阵、协议矩阵或自定义父操作状态。
 
