@@ -6,13 +6,13 @@
 
 | 材料要求 | 当前代码 | 严格结论 |
 |---|---|---|
-| TraceID = commId + counter + 扩展位 | `src/include/ccld_data.h` 定义 8+8+44 字节；44-byte 扩展位按材料保留，当前不赋予额外语义 | 已符合 |
+| TraceID = commId + counter + 扩展位 | `src/include/ccld_data.h` 定义 8+8+44 字节；44-byte 是保留存储区，当前不赋予额外语义 | 布局符合；counter 语义未符合 |
 | header: kernelIndex/mode/counter/detectChannel/traceid | `ncclCcldDiag` 使用对应字段 | 已符合 |
 | body: 每个 KID、每个 channel 的 sendCount/recvCount | `ChannelBody` 为两个 64-bit 计数 | 已符合 |
 | mode=0/1/2 语义 | host/device 使用 0、1、2；mode=1 为 tid==0 计数，mode=2 为全部线程计数 | 已符合代码语义，尚缺三协议逐路径实测 |
 | 连续 pinned memory | communicator 初始化时分配 pinned frame，slots 可由环境变量设置 | 结构已实现，严格资源验收未完成 |
 | 与 RCCL collTrace 解耦 | CCL-D frame、communicator/device 字段、分配和计数宏已移出 `ENABLE_COLLTRACE`；CCL-D 不再启动 legacy collTrace 线程，也不再读取其 diag 计数 | 源码已符合；最终 gfx936 构建和运行验收待完成 |
-| LRU 按 kernelIndex 复用 body | host `RecordPool` 选择空闲 block，device 通过 slot 索引；同一 TraceID 记录 pending plan 数，最后一个 kernel callback 才释放 | 架构已按材料实现，待本次增量构建后的多-plan回归验收 |
+| LRU 按 kernelIndex 复用 body | host `RecordPool` 选择空闲 block，device 通过 slot 索引；同一 TraceID 记录 pending plan 数，最后一个 kernel callback 才释放 | 生命周期结构已实现；当前 TraceID counter 仍由 `RecordPool::nextCounter()` 生成，必须改为通信域集合操作 `opCount`，并处理 grouped P2P 共用一个 opCount |
 
 ## 线程模型核对
 
@@ -62,3 +62,10 @@
 ## 当前唯一可直接宣称的结果
 
 最终 callback 快照版本已通过一项工程回归：双节点 8 rank、同一 group 内 256 个 AllReduce 加 P2P、运行 2 轮，通信结果正确，slot 回收后 516 个 counter/rank 均有 complete，观测丢失为 0。这只证明该 grouped-work 生命周期路径，不能代表 AntCCL 评测完成。
+
+## 本次图片与正文复核新增结论
+
+- TraceID 的 44-byte 区域只是预留存储区；当前布局正确，但 counter 必须是通信域内集合操作的统一递增计数。源码仍使用 `RecordPool::nextCounter()`，因此这项未完成。Grouped P2P 的多个 Send/Recv 还必须共享父集合操作身份。
+- 材料中的 `sendRate/recvRate` 是固定采样周期内的收发变化频率，并按其倒数用于 slow 判定。当前 analyzer 使用 `send_count / duration` 的字节/时间值，语义未对齐，不能标为完成。
+- slow 决策树的顺序已部分体现，但 hang 决策树尚未完整实现“未进入、部分完成、全部进入且都 hang、同算法同位置计数比较、非通信 hang”五个分支。
+- `algorithm_bandwidth_Bps` 的计算公式是实现自行选择的 RCCL bus-bandwidth 倍率，材料没有给出该公式；在没有运行数据核对前只能标为待验收。
