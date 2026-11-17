@@ -4,7 +4,7 @@
 
 ## 1. 诊断线程 CPU
 
-**当前情况**：AntCCL 图示是独立 diagnose thread；当前 RCCL 接口仍复用 `ncclCommThreadMain`，独立线程尚未实现。代码现在同时记录共享线程 CPU/墙钟、CCL-D 采样区 CPU/墙钟、采样调用数、设备样本数和采样周期；前者包含 RCCL 服务线程其他工作，后者才是采样函数开销。`KERNEL_COLL_TRACE` 应关闭，避免把其他 trace 工作混入对照。
+**当前情况**：AntCCL 图示是独立 diagnose thread；当前 RCCL 接口仍复用 `ncclCommThreadMain`，独立线程尚未实现。最终版 64-work、10-iteration 微基准中，8 rank 的共享线程 CPU/墙钟比为 6.18%–8.50%，采样函数 CPU/线程墙钟比为 0.007%–0.160%。这两者都不能直接与 AntCCL 的独立诊断线程约 1% 对比；callback 快照 CPU 也尚未单独统计。因此本项未达到验收标准。
 
 **实现**：
 
@@ -17,7 +17,7 @@
 
 ## 2. pinned memory
 
-**当前情况**：已修复 `RCCL_CCLD_ENABLE=0` 仍分配 frame 的问题；启用时写出 `frame_block_bytes`、`slots`、`frame_pinned_bytes`，关闭时不创建 CCL-D frame。仍需用 `/proc/<pid>/status` 的 `VmPin` 交叉核对 allocator 结果。
+**当前情况**：已修复 `RCCL_CCLD_ENABLE=0` 仍分配 frame 的问题；启用时写出 `frame_block_bytes`、`slots`、`frame_pinned_bytes`，关闭时不创建 CCL-D frame。512 slots 时单 communicator 申请 1,097,728 B；8 rank 共 8,781,824 B（8.375 MiB）。应用侧 VmPin 前后探针受 HIP/RCCL 初始化的 0–202,252 KiB 变化淹没，不能作为 CCL-D 分配量的独立证明；slot 矩阵和可比 allocator 交叉核对尚未完成，本项部分完成。
 
 **当前结构的基线**：`Header` 为 96 B，`MAXCHANNELS=128`，每个 `ChannelBody` 为 16 B，因此 `sizeof(ncclCcldDiag)=2144 B`；`RCCL_CCLD_SLOTS=512` 时每个 communicator 的 frame 为 1,097,728 B。该数值与材料示例 2208 B 不同，不能直接沿用材料数字。
 
@@ -32,7 +32,7 @@
 
 ## 3. GPU 开销
 
-**当前情况**：Simple、LL、LL128（当前 gfx936 不支持 LL128）路径内已有 send/recv 计数更新；没有开关配对的设备时间和吞吐实验，因此不能声明 GPU 额外开销为零。
+**当前情况**：Simple、LL 路径内已有 send/recv 计数更新；gfx936 当前不支持 LL128。HIP event off/on 微基准已做，但均值差异为 4096 元素 81.7%、65536 元素 19.7%；每配置只有 9 个样本，测试同时包含 RCCL/CCL-D callback 与后台工作，未拆出纯 kernel 成本。结果明确显示当前微基准有开销，本项未达到“GPU 无额外开销”的材料标准。
 
 **实现与验收**：
 

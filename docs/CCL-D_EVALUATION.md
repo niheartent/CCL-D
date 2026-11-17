@@ -2,6 +2,26 @@
 
 本文按参考材料第 5 节 Evaluation 的验收口径记录当前 gfx936 双节点结果。材料中的功能验收关注 slow/hang 的发现、定位和分析；性能验收关注训练耗时、模型精度和资源开销。没有实测的数据不填入推断值。待补实现与场景矩阵见 [Evaluation 补充实施清单](CCL-D_EVALUATION_GAPS.md)。
 
+## 验收结论（逐项对照）
+
+“有代码”或“通信通过”不等于达到 AntCCL 验收标准。按材料要求逐项判断：
+
+| AntCCL 验收项 | 当前判定 | 判定依据 |
+|---|---|---|
+| rank 未进入 collective | 未通过 | 有近似 missing 注入，但没有按材料口径完成发现时间、首错 rank、根因和原始证据闭环 |
+| kernel 内异常 hang | 未通过 | 现有 stall 在通信开始前阻塞，不是 kernel 内 send/recv 阶段异常 |
+| collective count 不一致 | 未通过 | 尚无 rank 少 1024 B 的多节点注入和定位结果 |
+| collective 后非通信 hang | 未通过 | 尚无通信完成后单 rank host 阻塞场景 |
+| 计算侧 slow | 未通过 | 尚无 collective 调用前 rank sleep 3 s 的分析结果 |
+| 通信侧 slow | 未通过 | 尚无每次 send/recv 后逐步延迟 2 us 的设备侧注入结果 |
+| 训练耗时、吞吐、loss、精度 ≤1% | 未通过 | 按用户要求尚未启动训练验收 |
+| 诊断线程 CPU 约 1% | 未通过 | 当前是共享 RCCL 服务线程；只有采样区 CPU 记录，没有独立 diagnose thread 的 AntCCL 结构和正式对照 |
+| pinned memory 资源验收 | 部分完成 | frame 大小和 slots 可记录，VmPin 已有探针，但还没有按 slots 矩阵完成基线/峰值报告 |
+| GPU 无额外开销 | 未通过 | HIP event 已显示 off/on 有差异，尚未拆分纯 kernel、callback 和后台线程开销 |
+| 同一 group 多 work 生命周期 | 已通过核心回归 | 256 work × 2、512 slots、8 rank，通信正确、516 counter/rank、dropped=0 |
+
+因此，当前不能说“已经达到 AntCCL 标准”：功能六项是 **0/6 完整通过**；grouped-work 生命周期是已通过的工程回归项；资源和性能项仍未完成正式验收。
+
 ## 1. 测试环境与方法
 
 | 项目 | 当前测试 |
