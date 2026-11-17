@@ -309,10 +309,6 @@ void *ncclCommThreadMain(void *arg) {
                     comm->busId, comm->nRanks);
                 break;
               case ncclCollTraceKernelEndType:
-                rcclCcldRecordDevice(comm, (const struct ncclCollTrace*)td,
-                                     comm->collTraceTail[channel].diag.sendCount,
-                                     comm->collTraceTail[channel].diag.recvCount,
-                                     true);
                 sprintf(line+offset, " KE busId %lx nRanks %d", comm->busId, comm->nRanks);
                 break;
               case ncclCollTraceAbortType:
@@ -649,9 +645,9 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
 #ifdef ENABLE_COLLTRACE
   comm->collTraceExit = 0;
   comm->collTraceEnabled = false; // we can enable colltrace without starting a thread
-  if (((ncclDebugLevel >= NCCL_LOG_INFO) && rcclParamKernelCollTraceEnable()) || rcclCcldEnabled()) {
+  if ((ncclDebugLevel >= NCCL_LOG_INFO) && rcclParamKernelCollTraceEnable()) {
     comm->collTraceEnabled = true;
-    if (rcclParamKernelCollTraceThreadEnable() || rcclCcldEnabled())
+    if (rcclParamKernelCollTraceThreadEnable())
       pthread_create(&comm->collTraceThread, NULL, ncclCommThreadMain, (void *)comm);
     else
       comm->collTraceThread = 0;

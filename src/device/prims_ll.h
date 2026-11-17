@@ -637,7 +637,6 @@ private:
       nsend++;
     }
     this->fan = Fan(nrecv, nsend);
-    CCLD_DIAG_SET_PEERS(sendPeers, nsend, recvPeers, nrecv);
     loadRecvSync();
     loadSendSync();
     setDataPtrs(inputBuf, outputBuf);

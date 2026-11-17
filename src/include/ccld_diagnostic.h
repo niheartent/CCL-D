@@ -8,9 +8,6 @@
 struct ncclInfo;
 struct ncclComm;
 struct ncclKernelPlan;
-#ifdef ENABLE_COLLTRACE
-struct ncclCollTrace;
-#endif
 
 void rcclCcldRecordEnqueue(struct ncclInfo* info);
 void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
@@ -40,11 +37,5 @@ uint64_t rcclCcldSampleCount(const struct ncclComm* comm);
 bool rcclCcldStartThread(struct ncclComm* comm, uint64_t sampleIntervalNs);
 void rcclCcldNotifyCompletion(const struct ncclComm* comm);
 void rcclCcldStopThread(struct ncclComm* comm);
-#ifdef ENABLE_COLLTRACE
-void rcclCcldRecordDevice(const struct ncclComm* comm,
-                          const struct ncclCollTrace* trace,
-                          uint64_t send_count, uint64_t recv_count,
-                          bool complete);
-#endif
 
 #endif

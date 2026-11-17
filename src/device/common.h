@@ -43,17 +43,6 @@
 #endif
 #define CCLD_DIAG_SLOT_PTR (ncclShmem.comm.ccldDiag + ncclShmem.ccldDiagSlot)
 #define CCLD_DIAG_BODY_PTR (&CCLD_DIAG_SLOT_PTR->channels[ncclShmem.channelId])
-#ifdef ENABLE_COLLTRACE
-#define CCLD_DIAG_RESET() do { \
-    if (threadIdx.x == 0 && ncclShmem.ccldDiagActive) { \
-      __atomic_store_n(&ncclShmem.collTraceTail->diag.sendCount, 0ULL, __ATOMIC_RELAXED); \
-      __atomic_store_n(&ncclShmem.collTraceTail->diag.recvCount, 0ULL, __ATOMIC_RELAXED); \
-    } \
-  } while (0)
-#else
-#define CCLD_DIAG_RESET() do { } while (0)
-#endif
-  #define CCLD_DIAG_SET_PEERS(SENDPEERS, NSEND, RECVPEERS, NRECV) do { } while (0)
   #define CCLD_DIAG_ADD(SEND, RECV) do { \
     if ((ncclShmem.comm.ccldDiagMode == 2 || tid == 0) && \
         (ncclShmem.ccldDiagActive || ncclShmem.ccldDiagActive2)) { \

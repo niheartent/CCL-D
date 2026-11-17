@@ -678,7 +678,6 @@ private:
     while (nrecv < MaxRecv && recvPeers[nrecv] != -1) nrecv++;
     while (nsend < MaxSend && sendPeers[nsend] != -1) nsend++;
     this->fan = Fan(nrecv, nsend);
-    CCLD_DIAG_SET_PEERS(sendPeers, nsend, recvPeers, nrecv);
 
     constexpr int ThreadPerSync =
       MaxSend >= 16 || MaxRecv >= 16 ? 32 : // NVLS may have an arity > 8. In that case increase the size of the groups

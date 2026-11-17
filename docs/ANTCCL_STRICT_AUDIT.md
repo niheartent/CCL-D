@@ -11,7 +11,7 @@
 | body: 每个 KID、每个 channel 的 sendCount/recvCount | `ChannelBody` 为两个 64-bit 计数 | 已符合 |
 | mode=0/1/2 语义 | host/device 使用 0、1、2；mode=1 为 tid==0 计数，mode=2 为全部线程计数 | 已符合代码语义，尚缺三协议逐路径实测 |
 | 连续 pinned memory | communicator 初始化时分配 pinned frame，slots 可由环境变量设置 | 结构已实现，严格资源验收未完成 |
-| 与 RCCL collTrace 解耦 | CCL-D frame、communicator/device 字段、分配和计数宏已移出 `ENABLE_COLLTRACE`；旧 collTrace ring buffer 仍为可选 | 源码已符合；`COLLTRACE=OFF` 构建和运行验收待完成 |
+| 与 RCCL collTrace 解耦 | CCL-D frame、communicator/device 字段、分配和计数宏已移出 `ENABLE_COLLTRACE`；CCL-D 不再启动 legacy collTrace 线程，也不再读取其 diag 计数 | 源码已符合；最终 gfx936 构建和运行验收待完成 |
 | LRU 按 kernelIndex 复用 body | host `RecordPool` 选择空闲 block，device 通过 slot 索引；同一 TraceID 记录 pending plan 数，最后一个 kernel callback 才释放 | 架构已按材料实现，待本次增量构建后的多-plan回归验收 |
 
 ## 线程模型核对

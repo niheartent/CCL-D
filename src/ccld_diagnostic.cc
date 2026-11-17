@@ -555,6 +555,3 @@ void rcclCcldSampleDiagnostics(const struct ncclComm* comm, uint64_t timestampNs
                                timestampNs, item.sendDelta, item.recvDelta, item.elapsed, item.reset);
 }
 
-#ifdef ENABLE_COLLTRACE
-void rcclCcldRecordDevice(const struct ncclComm*, const struct ncclCollTrace*, uint64_t, uint64_t, bool) {}
-#endif
