@@ -245,11 +245,6 @@ RCCL_PARAM(CcldDiagMode, "CCLD_MODE", 1);
 void *ncclCommThreadMain(void *arg) {
   ncclComm_t comm = (ncclComm_t)arg;
   int head[MAXCHANNELS];
-  const int ccldSlots = comm->ccldDiagSlots > 0 ? comm->ccldDiagSlots : 1;
-  std::vector<uint64_t> lastCcldSampleNs(MAXCHANNELS * ccldSlots, 0);
-  std::vector<uint64_t> lastCcldSend(MAXCHANNELS * ccldSlots, 0);
-  std::vector<uint64_t> lastCcldRecv(MAXCHANNELS * ccldSlots, 0);
-  std::vector<uint64_t> lastCcldCounter(MAXCHANNELS * ccldSlots, UINT64_MAX);
   const uint64_t sampleIntervalNs = static_cast<uint64_t>(
       std::min<int64_t>(60000000, std::max<int64_t>(1, rcclParamCcldSampleUs()))) * 1000ULL;
   const useconds_t samplePollUs = static_cast<useconds_t>(
@@ -269,35 +264,7 @@ void *ncclCommThreadMain(void *arg) {
     if (comm->ccldDiag != nullptr) {
       const uint64_t sampleNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
-      for (int block = 0; block < ccldSlots; ++block) {
-        volatile struct ncclCcldDiag* diag = comm->ccldDiag + block;
-        const uint64_t mode = __atomic_load_n(&diag->header.mode, __ATOMIC_ACQUIRE);
-        if (mode == 0) continue;
-        const uint64_t counter = __atomic_load_n(&diag->header.counter, __ATOMIC_RELAXED);
-        for (int channel = 0; channel < MAXCHANNELS; ++channel) {
-          const int index = block * MAXCHANNELS + channel;
-          volatile rccl_ccld::ChannelBody* body = &diag->channels[channel];
-          const uint64_t sends = __atomic_load_n(&body->sendCount, __ATOMIC_RELAXED);
-          const uint64_t recvs = __atomic_load_n(&body->recvCount, __ATOMIC_RELAXED);
-          if (lastCcldCounter[index] != counter) {
-            lastCcldCounter[index] = counter;
-            lastCcldSampleNs[index] = 0;
-            lastCcldSend[index] = 0;
-            lastCcldRecv[index] = 0;
-          }
-          if (sampleNs - lastCcldSampleNs[index] < sampleIntervalNs) continue;
-          const bool reset = lastCcldSampleNs[index] != 0 &&
-                             (sends < lastCcldSend[index] || recvs < lastCcldRecv[index]);
-          const uint64_t elapsed = lastCcldSampleNs[index] ? sampleNs - lastCcldSampleNs[index] : 0;
-          const uint64_t sendDelta = reset || !lastCcldSampleNs[index] ? 0 : sends - lastCcldSend[index];
-          const uint64_t recvDelta = reset || !lastCcldSampleNs[index] ? 0 : recvs - lastCcldRecv[index];
-          rcclCcldRecordDeviceSample(comm, counter, channel, sends, recvs, sampleNs,
-                                     sendDelta, recvDelta, elapsed, reset);
-          lastCcldSampleNs[index] = sampleNs;
-          lastCcldSend[index] = sends;
-          lastCcldRecv[index] = recvs;
-        }
-      }
+      rcclCcldSampleDiagnostics(comm, sampleNs, sampleIntervalNs);
     }
     int numActiveChans = MAXCHANNELS;
     for (int channel = 0; channel < MAXCHANNELS; channel++) {

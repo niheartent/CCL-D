@@ -280,8 +280,8 @@ def analyze_operation_semantics(records):
         results.append(result)
     return results
 
-def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
-                        timeout_ms=2000):
+def analyze_completions(records, *, slow_rate_ratio=0.5, slow_duration_ratio=2.0,
+                        now_ns=None, timeout_ms=2000):
     """Aggregate completion records and detect missing completion/count/rate outliers.
 
     ``start_timestamp`` and ``end_timestamp`` are device clock ticks emitted by
@@ -516,10 +516,21 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
         usable_recv_rates = [v["recv_rate"] for v in by_rank.values()
                              if v["recv_rate"] is not None and v["recv_rate"] > 0]
         slow_ranks = []
+        usable_durations = {rank: value["duration"] for rank, value in by_rank.items()
+                            if value["duration"] is not None and value["duration"] > 0}
+        # When rank completion times diverge substantially, the slowest rank
+        # is the direct outlier.  When execution is in step, use per-rank
+        # send/receive rates to find the least-progressing participant.
+        if len(usable_durations) == len(by_rank) and len(by_rank) >= 2:
+            duration_baseline = median(usable_durations.values())
+            slowest_duration = max(usable_durations.values())
+            if duration_baseline > 0 and slowest_duration >= duration_baseline * slow_duration_ratio:
+                slow_ranks = sorted(rank for rank, duration in usable_durations.items()
+                                    if duration == slowest_duration)
         # A one-way zero can be a valid role/topology property (for example,
         # the broadcast root). Compare directions independently and diagnose
         # only when every participating rank has evidence in both directions.
-        if (len(usable_send_rates) == len(by_rank) and
+        if (not slow_ranks and len(usable_send_rates) == len(by_rank) and
                 len(usable_recv_rates) == len(by_rank) and len(by_rank) >= 2):
             send_baseline = sorted(usable_send_rates)[len(usable_send_rates) // 2]
             recv_baseline = sorted(usable_recv_rates)[len(usable_recv_rates) // 2]
@@ -665,11 +676,12 @@ def analyze_progress_samples(records, *, stagnant_intervals=3):
         if key in completed:
             continue
         ts = int(row["timestamp_ns"])
+        local_count = int(row.get("local_ranks", row.get("nranks", 1)))
         expected_by_node[(str(row.get("comm_id", "unknown")),
                           str(row.get("counter", "unknown")), node)] = max(
                               expected_by_node[(str(row.get("comm_id", "unknown")),
                                                  str(row.get("counter", "unknown")), node)],
-                              int(row.get("nranks", 1)), rank + 1)
+                              local_count, int(row.get("local_rank", rank)) + 1)
         bucket = groups[(str(row.get("comm_id", "unknown")),
                          str(row.get("counter", "unknown")))][node][rank][channel]
         item = bucket.setdefault(ts, {"send_count": 0, "recv_count": 0,

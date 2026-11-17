@@ -19,6 +19,8 @@ void rcclCcldRegisterBody(const struct ncclComm* comm, uint64_t counter,
 void rcclCcldFinalizeDiagnostics(const struct ncclComm* comm,
                                  const uint64_t* counters, size_t count);
 void rcclCcldDrainDiagnostics(const struct ncclComm* comm);
+void rcclCcldSampleDiagnostics(const struct ncclComm* comm, uint64_t timestampNs,
+                               uint64_t sampleIntervalNs);
 void rcclCcldRegisterPlanCounter(struct ncclKernelPlan* plan, uint64_t counter);
 bool rcclCcldEnabled();
 void rcclCcldForgetComm(const struct ncclComm* comm);

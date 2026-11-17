@@ -224,6 +224,19 @@ class CcldAnalyzeTest(unittest.TestCase):
         result = analyze_completions(rows)[0]
         self.assertEqual(result["status"], "COMM_SLOW")
         self.assertEqual(result["slow_ranks"], [2])
+
+    def test_completion_duration_outlier_is_detected_first(self):
+        rows = []
+        for rank, duration in ((0, 100), (1, 105), (2, 400)):
+            rows.append({"phase": "complete", "comm_id": "duration",
+                         "counter": 1, "rank": rank, "nranks": 3,
+                         "algorithm": -1, "protocol": -1,
+                         "send_count": 1000, "recv_count": 1000,
+                         "start_timestamp": 0, "end_timestamp": duration,
+                         "complete": True})
+        result = analyze_completions(rows)[0]
+        self.assertEqual(result["status"], "COMM_SLOW")
+        self.assertEqual(result["slow_ranks"], [2])
         self.assertAlmostEqual(result["per_rank"][2]["send_rate"], 2.5)
         self.assertEqual(result["root_cause"], "COMMUNICATION_PROGRESS_SLOW")
         self.assertEqual(result["first_error_rank"], 2)
@@ -425,6 +438,19 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual(result["status"], "COMM_STALLED")
         self.assertEqual(result["scope"], "all_ranks")
         self.assertEqual(result["root_cause"], "ALL_RANKS_NO_PROGRESS")
+
+    def test_multinode_progress_uses_local_rank_count(self):
+        rows = []
+        for ts in (0, 10, 20, 30):
+            for rank, node, local_rank in ((0, 0, 0), (1, 0, 1),
+                                           (2, 1, 0), (3, 1, 1)):
+                rows.append({"phase": "sample", "comm_id": "multi", "counter": 1,
+                             "rank": rank, "node": node, "local_rank": local_rank,
+                             "local_ranks": 2, "nranks": 4, "timestamp_ns": ts,
+                             "channel": 0, "send_count": 0, "recv_count": 0})
+        result = analyze_progress_samples(rows, stagnant_intervals=3)[0]
+        self.assertEqual(result["scope"], "all_ranks")
+        self.assertEqual(result["slow_ranks"], [0, 1, 2, 3])
 
     def test_progress_samples_do_not_compare_different_nodes(self):
         rows = []

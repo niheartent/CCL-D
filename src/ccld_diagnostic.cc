@@ -38,7 +38,9 @@ struct OperationInfo {
   std::string op;
   std::set<uint16_t> channels;
 };
+struct SamplePrevious { uint64_t timestamp, send, recv; };
 std::unordered_map<const ncclComm*, std::unordered_map<uint64_t, OperationInfo>> g_operations;
+std::unordered_map<std::string, SamplePrevious> g_samplePrevious;
 
 bool enabled() {
   const char* value = std::getenv("RCCL_CCLD_ENABLE");
@@ -115,6 +117,7 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
           << "\",\"counter\":" << counter << ",\"op_count\":" << comm->opCount
           << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
           << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
+          << ",\"local_rank\":" << comm->localRank << ",\"local_ranks\":" << comm->localRanks
           << ",\"op\":\"" << safe(info->opName) << "\",\"count\":" << info->count
           << ",\"bytes\":" << info->count * ncclTypeSize(info->datatype)
           << ",\"datatype\":" << static_cast<int>(info->datatype)
@@ -154,6 +157,7 @@ void rcclCcldRecordEnqueue(struct ncclInfo* info) {
         << "\",\"counter\":" << counter << ",\"op_count\":" << comm->opCount
         << ",\"rank\":" << comm->rank << ",\"nranks\":" << comm->nRanks
         << ",\"node\":" << comm->node << ",\"nnodes\":" << comm->nNodes
+        << ",\"local_rank\":" << comm->localRank << ",\"local_ranks\":" << comm->localRanks
         << ",\"op\":\"" << operation.op << "\",\"count\":" << operation.count
         << ",\"bytes\":" << operation.bytes << ",\"datatype\":" << operation.datatype
         << ",\"root\":" << operation.root << ",\"host_status\":\"entered\"}\n";
@@ -238,6 +242,12 @@ static void writeCompletedDiagnostics(const struct ncclComm* comm, const Complet
     g_log.flush();
     block->header.mode = 0;
     ops->second.erase(opIt);
+    const std::string prefix = std::to_string(reinterpret_cast<uintptr_t>(comm)) + ":" +
+                               std::to_string(counter) + ":";
+    for (auto sample = g_samplePrevious.begin(); sample != g_samplePrevious.end();) {
+      if (sample->first.compare(0, prefix.size(), prefix) == 0) sample = g_samplePrevious.erase(sample);
+      else ++sample;
+    }
     pool->second->release(counter);
   }
 }
@@ -268,6 +278,11 @@ void rcclCcldForgetComm(const struct ncclComm* comm) {
   if (!comm) return;
   std::lock_guard<std::mutex> guard(g_lock);
   g_pools.erase(comm); g_operations.erase(comm); g_completed.erase(comm);
+  const std::string prefix = std::to_string(reinterpret_cast<uintptr_t>(comm)) + ":";
+  for (auto sample = g_samplePrevious.begin(); sample != g_samplePrevious.end();) {
+    if (sample->first.compare(0, prefix.size(), prefix) == 0) sample = g_samplePrevious.erase(sample);
+    else ++sample;
+  }
 }
 
 void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t counter, uint16_t channel,
@@ -280,6 +295,7 @@ void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t counter, u
         << ",\"comm_id\":\"" << std::hex << comm->commHash << std::dec
         << "\",\"counter\":" << counter << ",\"rank\":" << comm->rank
         << ",\"nranks\":" << comm->nRanks << ",\"node\":" << comm->node
+        << ",\"local_rank\":" << comm->localRank << ",\"local_ranks\":" << comm->localRanks
         << ",\"channel\":" << channel
         << ",\"send_count\":" << sendCount << ",\"recv_count\":" << recvCount
         << ",\"send_delta\":" << sendDelta << ",\"recv_delta\":" << recvDelta
@@ -288,6 +304,45 @@ void rcclCcldRecordDeviceSample(const struct ncclComm* comm, uint64_t counter, u
         << ",\"recv_rate_Bps\":" << (elapsedNs ? static_cast<uint64_t>(static_cast<long double>(recvDelta) * 1000000000.0L / elapsedNs) : 0)
         << "}\n";
   g_log.flush();
+}
+
+void rcclCcldSampleDiagnostics(const struct ncclComm* comm, uint64_t timestampNs,
+                               uint64_t sampleIntervalNs) {
+  if (!comm || !enabled() || !comm->ccldDiag) return;
+  struct Snapshot { uint64_t counter, send, recv, sendDelta, recvDelta, elapsed; uint16_t channel; bool reset; };
+  std::vector<Snapshot> snapshots;
+  {
+    std::lock_guard<std::mutex> guard(g_lock);
+    auto pit = g_pools.find(comm);
+    auto oit = g_operations.find(comm);
+    if (pit == g_pools.end() || oit == g_operations.end()) return;
+    for (const auto& entry : oit->second) {
+      uint32_t index = UINT32_MAX;
+      if (!pit->second->find(entry.first, &index)) continue;
+      volatile struct ncclCcldDiag* diag = comm->ccldDiag + index;
+      if (__atomic_load_n(&diag->header.mode, __ATOMIC_ACQUIRE) == 0) continue;
+      for (uint16_t channel : entry.second.channels) {
+        std::string key = std::to_string(reinterpret_cast<uintptr_t>(comm)) + ":" +
+                          std::to_string(entry.first) + ":" + std::to_string(channel);
+        volatile rccl_ccld::ChannelBody* body = &diag->channels[channel];
+        const uint64_t sends = __atomic_load_n(&body->sendCount, __ATOMIC_RELAXED);
+        const uint64_t recvs = __atomic_load_n(&body->recvCount, __ATOMIC_RELAXED);
+        auto prev = g_samplePrevious.find(key);
+        const bool reset = prev != g_samplePrevious.end() &&
+                           (sends < prev->second.send || recvs < prev->second.recv);
+        const uint64_t elapsed = prev == g_samplePrevious.end() || reset ? 0 : timestampNs - prev->second.timestamp;
+        if (prev == g_samplePrevious.end() || elapsed >= sampleIntervalNs || reset) {
+          const uint64_t sendDelta = prev == g_samplePrevious.end() || reset ? 0 : sends - prev->second.send;
+          const uint64_t recvDelta = prev == g_samplePrevious.end() || reset ? 0 : recvs - prev->second.recv;
+          snapshots.push_back({entry.first, sends, recvs, sendDelta, recvDelta, elapsed, channel, reset});
+          g_samplePrevious[key] = {timestampNs, sends, recvs};
+        }
+      }
+    }
+  }
+  for (const Snapshot& item : snapshots)
+    rcclCcldRecordDeviceSample(comm, item.counter, item.channel, item.send, item.recv,
+                               timestampNs, item.sendDelta, item.recvDelta, item.elapsed, item.reset);
 }
 
 #ifdef ENABLE_COLLTRACE
