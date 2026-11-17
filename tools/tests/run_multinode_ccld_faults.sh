@@ -16,7 +16,7 @@ if [[ -e "$OUT" ]] && [[ -n "$(find "$OUT" -mindepth 1 -print -quit)" ]]; then
 fi
 mkdir -p "$OUT"
 export LD_LIBRARY_PATH="$ROOT/rccl-artifacts/ccld-frame-gfx936/install/lib:$UCX_PREFIX/lib:/opt/hyhal/lib:/opt/dtk/lib:/opt/dtk/hip/lib:/opt/mpi/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export RCCL_CCLD_ENABLE=1 RCCL_CCLD_SLOTS=512 RCCL_CCLD_SAMPLE_US=20000
+export RCCL_CCLD_ENABLE=1 RCCL_CCLD_SLOTS=512 RCCL_CCLD_SAMPLE_US=1000
 export CCLD_ITERS=1 CCLD_COUNT=4096 CCLD_FAULT_RANK=2 CCLD_FAULT_DELAY_MS=2000
 export CCLD_FAULT_STALL_MS=${CCLD_FAULT_STALL_MS:-30000}
 export NCCL_PROTO=Simple NCCL_ALGO=Ring

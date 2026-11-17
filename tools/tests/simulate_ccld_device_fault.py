@@ -22,9 +22,7 @@ def main():
         for rank in range(args.ranks):
             if args.fault == "missing" and rank == args.ranks - 1:
                 continue
-            total = 1024 if args.fault != "slow" or rank != 2 else 256
-            if args.fault == "stall" and rank == 2:
-                total = 0
+            total = 0 if args.fault == "stall" and rank == 2 else 1024
             duration = 1000 if args.fault != "slow" or rank != 2 else 4000
             for channel in range(args.channels):
                 row = {"schema": 1, "phase": "complete", "comm_id": "simulated",
@@ -35,6 +33,15 @@ def main():
                        "end_timestamp": duration,
                        "complete": args.fault != "stall" or rank != 2}
                 stream.write(json.dumps(row, sort_keys=True) + "\n")
+            if args.fault != "stall":
+                sample_delta = 256 if args.fault == "slow" and rank == 2 else total
+                stream.write(json.dumps({"schema": 1, "phase": "sample",
+                    "comm_id": "simulated", "counter": 0, "rank": rank,
+                    "node": 0, "local_rank": rank, "local_ranks": args.ranks,
+                    "channel": 0, "timestamp_ns": 2000, "send_count": total,
+                    "recv_count": total, "send_delta": sample_delta,
+                    "recv_delta": sample_delta, "elapsed_ns": 1000,
+                    "counter_reset": False}, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":

@@ -4,16 +4,16 @@
 
 ## 1. 诊断线程 CPU
 
-**当前情况**：AntCCL 图示是独立 diagnose thread；当前 RCCL 接口仍复用 `ncclCommThreadMain`，独立线程尚未实现。最终版 64-work、10-iteration 微基准中，8 rank 的共享线程 CPU/墙钟比为 6.18%–8.50%，采样函数 CPU/线程墙钟比为 0.007%–0.160%。这两者都不能直接与 AntCCL 的独立诊断线程约 1% 对比；callback 快照 CPU 也尚未单独统计。因此本项未达到验收标准。
+**当前情况**：CCL-D 已使用独立 diagnose thread，不再复用 `ncclCommThreadMain`。当前已有 diagnose thread CPU、采样区 CPU 和 callback 生命周期统计，但尚未完成与关闭诊断基线的训练级对照，因此本项仍未达到性能验收标准。
 
 **实现**：
 
 - 在线程入口和退出处使用 `clock_gettime(CLOCK_THREAD_CPUTIME_ID)`；
-- 维护 `thread_cpu_ns`/`thread_wall_ns`（共享线程总量）和 `diagnostic_sample_cpu_ns`/`diagnostic_sample_wall_ns`（采样区量）；
+- 维护 `thread_cpu_ns`/`thread_wall_ns`（独立 diagnose thread 总量）和 `diagnostic_sample_cpu_ns`/`diagnostic_sample_wall_ns`（采样区量）；
 - 线程退出时输出 `sample_calls`、设备样本数、`sample_interval_ns` 和两个 CPU 比例；
 - 线程退出、初始化失败和诊断关闭时都要能输出完整或明确标记为 partial 的记录。
 
-**验收**：同一 workload 分别关闭诊断、默认采样周期、20 ms 采样周期运行，比较每 rank 的 CPU 时间和占比；检查多节点 rank 间没有异常偏离。目标是给出实际数值，再与 1% 参考口径比较。
+**验收**：同一 workload 分别关闭诊断和使用 `RCCL_CCLD_SAMPLE_US` 配置运行，比较每 rank 的 CPU 时间和占比；检查多节点 rank 间没有异常偏离。目标是给出实际数值，再与 1% 参考口径比较。
 
 ## 2. pinned memory
 

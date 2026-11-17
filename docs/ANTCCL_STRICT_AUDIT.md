@@ -24,9 +24,9 @@
 4. hostcallback 通知 diagnose thread 当前操作完成；
 5. xccl main thread 回收 diagnose thread 资源。
 
-当前代码已创建独立 diagnose thread：它周期读取 pinned frame、调用采样/输出逻辑，并在 communicator 销毁时停止并 join；kernel hostcallback 通过条件变量通知该线程。回调粒度为每个 kernel plan；同一 TraceID 的多个 plan 只在最后一个 callback 回收 frame 并输出 complete。该改动正在进行 gfx936 增量构建，构建和多节点回归完成前仍标为待验收。
+当前代码已创建独立 diagnose thread：它周期读取 pinned frame、调用采样/输出逻辑，并在 communicator 销毁时停止并 join；kernel hostcallback 通过条件变量通知该线程。回调粒度为每个 kernel plan；同一 TraceID 的多个 plan 只在最后一个 callback 回收 frame 并输出 complete。源码静态结构符合，gfx936 构建和多节点运行仍待验收。
 
-算法带宽字段已加入输出；材料要求该字段但未给出公式，当前实现采用 RCCL replayer 的 AllReduce、AllGather、ReduceScatter bus-bandwidth 倍率，必须经过运行数据核对后才能验收。
+算法带宽字段已加入输出；当前实现按 nccl-tests bus-bandwidth factor 覆盖已支持的 collective 类型，仍需通过运行数据核对单位和数值。
 
 ## 决策树核对
 

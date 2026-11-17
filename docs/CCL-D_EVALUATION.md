@@ -72,7 +72,7 @@
 | 故障分析流程 | 已完成 | missing、progress stalled、collective incomplete 分支均有输出 |
 | 训练耗时影响 ≤1% | 未测 | 当前是通信回归程序，没有 LLM 训练 baseline/enable 对照 |
 | 模型精度影响 ≤1% | 未测 | 尚未接入真实训练任务和 loss 曲线对照 |
-| CPU/pinned memory/GPU 资源开销 | 部分已测 | 采样区 CPU、共享线程 CPU、frame 字节和 HIP event 探针已工作；短消息微基准显示端到端有开销，训练级开销与纯 kernel 开销仍未测 |
+| CPU/pinned memory/GPU 资源开销 | 部分已测 | 独立 diagnose thread CPU、frame 字节和 HIP event 探针已工作；短消息微基准显示端到端有开销，训练级开销与纯 kernel 开销仍未测 |
 | 同一 group 多 work 并发 | 已完成核心路径回归 | 最终 callback 快照版本下 256 works × 2、512 slots、8 rank 全部完成，dropped=0；覆盖 AllReduce 与混合 P2P |
 
 ## 4. 下一步验收
