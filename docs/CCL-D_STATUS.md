@@ -23,6 +23,6 @@ gfx936 独立构建已完成并安装到 `rccl-artifacts/ccld-frame-gfx936/insta
 
 当前保持 `RCCL_CCLD_SLOTS=512`。它是运行时容量参数，不需要重新编译；双节点五算子回归在该值下无观测丢失。双节点 8 rank 故障注入由 `tools/tests/run_multinode_ccld_faults.sh` 驱动：slow 在 rank 2 前插入 2 秒 stream 延迟，monitor 实时报告 `COMM_STALLED / RANK_PROGRESS_STALLED / slow_ranks=[2]`，任务最终校验通过；missing 让 rank 2 不进入 collective，monitor 报告 `MISSING_RANK` 并指出 rank 2；stall 在 rank 2 的 stream 上等待 30 秒，monitor 定位 rank 2，外层 8 秒超时终止任务。脚本退出码与预期一致。
 
-专项实测：Ring+LL 在 8 rank 双节点通过，complete 记录协议枚举为 `0`；Tree+Simple 在 8 rank 双节点通过，complete 记录为算法 `0`、协议 `2`，无观测丢失。Ring+LL128 在当前 gfx936 双节点环境由 RCCL 返回 `internal error`，只有 enqueue 没有 complete，已单独记录为运行环境不支持的组合。
+专项实测：Ring+LL 在 8 rank 双节点通过，complete 记录协议枚举为 `0`；Tree+Simple 在 8 rank 双节点通过，complete 记录为算法 `0`、协议 `2`，无观测丢失。LL128 边界已从源码确认：当前构建用 `if(0)` 禁用 `ENABLE_LL128`；HIP kernel 生成代码即使启用也限定 `__gfx90a__`，planner 还要求 `RCCL_TOPO_XGMI_ALL`。因此 gfx936 双节点 Ring+LL128 的 `internal error` 是 RCCL 的架构/构建支持边界，不能作为 CCL-D 故障判定。
 
 双节点故障矩阵产物：`rccl-artifacts/ccld-frame-gfx936/multinode-faults-finalverified-20261117T051732Z/`。monitor 现在会将新到达的 rank 进度结果纳入去重签名，避免先前的状态遮住后续精确定位结果。
