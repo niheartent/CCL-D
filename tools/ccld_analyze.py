@@ -317,17 +317,14 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
                    str(record.get("counter", "unknown")))
             rank = int(record.get("rank", -1))
             timestamp = int(record.get("timestamp_ns", 0))
-            previous = sample_groups[key].get(rank)
-            if previous is None or timestamp > previous["timestamp_ns"]:
-                sample_groups[key][rank] = {
-                    "timestamp_ns": timestamp,
-                    "send_delta": int(record.get("send_delta", 0)),
-                    "recv_delta": int(record.get("recv_delta", 0)),
-                    "elapsed_ns": int(record.get("elapsed_ns", 0)),
-                }
-            elif timestamp == previous["timestamp_ns"]:
-                previous["send_delta"] += int(record.get("send_delta", 0))
-                previous["recv_delta"] += int(record.get("recv_delta", 0))
+            previous = sample_groups[key].setdefault(rank, {
+                "timestamp_ns": timestamp, "send_delta": 0,
+                "recv_delta": 0, "elapsed_ns": 0, "samples": 0})
+            previous["timestamp_ns"] = max(previous["timestamp_ns"], timestamp)
+            previous["send_delta"] += int(record.get("send_delta", 0))
+            previous["recv_delta"] += int(record.get("recv_delta", 0))
+            previous["elapsed_ns"] += max(0, int(record.get("elapsed_ns", 0)))
+            previous["samples"] += 1
             continue
         # ENABLE_COLLTRACE writes a separate legacy completion-shaped event.
         # It has topology_kind but no CCL-D algorithm/protocol fields and must
@@ -588,7 +585,9 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
             sample = sample_groups.get((comm_id, counter), {}).get(rank)
             value["sample_send_delta"] = sample["send_delta"] if sample else None
             value["sample_recv_delta"] = sample["recv_delta"] if sample else None
-            value["sample_interval_ns"] = sample["elapsed_ns"] if sample else None
+            value["sample_interval_ns"] = (
+                sample["elapsed_ns"] // max(1, sample["samples"])
+                if sample else None)
         rate_send_key = "sample_send_delta"
         rate_recv_key = "sample_recv_delta"
         usable_send_rates = [v[rate_send_key] for v in by_rank.values()
