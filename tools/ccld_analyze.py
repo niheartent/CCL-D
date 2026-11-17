@@ -27,8 +27,12 @@ def _root_cause(status, *, ranks=None, missing_ranks=None, incomplete_ranks=None
         cause, confidence, affected = "PARAMETER_MISMATCH", "high", ranks
     elif status == "MISSING_RANK":
         cause, confidence, affected = "RANK_DID_NOT_ENQUEUE", "high", missing_ranks
-    elif status == "MISSING_COMPLETION":
-        cause, confidence, affected = "COLLECTIVE_DID_NOT_COMPLETE", "high", incomplete_ranks or missing_ranks
+    elif status == "HANG_MISSING_RANK":
+        cause, confidence, affected = "RANK_DID_NOT_ENTER_COLLECTIVE", "high", missing_ranks
+    elif status == "HANG_PARTIAL_COMPLETION":
+        cause, confidence, affected = "PARTIAL_RANKS_STUCK_IN_COLLECTIVE", "high", incomplete_ranks
+    elif status == "HANG_ALL_RANKS":
+        cause, confidence, affected = "ALL_RANKS_STUCK_IN_COLLECTIVE", "high", incomplete_ranks
     elif status in ("COMM_SLOW", "COMM_SLOW_WINDOW", "COMM_STALLED"):
         cause, confidence, affected = "COMMUNICATION_PROGRESS_SLOW", "medium", slow_ranks
     elif status == "COMPUTATION_SLOW":
@@ -355,7 +359,14 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
                 elif mono is not None and int(row.get("nnodes", 1)) == 1:
                     ages.append(now_mono_ns - int(mono))
             age_ms = max(0, min(ages) / 1_000_000) if ages else 0
-            status = "MISSING_COMPLETION" if age_ms >= timeout_ms else "PENDING"
+            if age_ms < timeout_ms:
+                status = "PENDING"
+            elif missing:
+                status = "HANG_MISSING_RANK"
+            elif enqueued:
+                status = "HANG_ALL_RANKS"
+            else:
+                status = "PENDING"
             result = {"comm_id": comm_id, "counter": counter, "status": status,
                       "ranks": enqueued, "expected_ranks": list(range(expected)),
                       "missing_ranks": missing, "incomplete_ranks": enqueued,
@@ -656,9 +667,15 @@ def analyze_completions(records, *, slow_rate_ratio=0.5, now_ns=None,
         incomplete.extend(sorted(enqueued_ranks - complete_ranks))
         incomplete = sorted(set(incomplete))
         missing_completion = sorted(enqueued_ranks - complete_ranks)
-        missing = sorted(set(missing) | set(missing_completion))
+        # A rank absent from completion but present in enqueue entered the
+        # collective and belongs to the partial/all-ranks hang branches. Only
+        # an absent enqueue is the AntCCL "rank did not enter" branch.
+        missing = (sorted(set(range(expected)) - enqueued_ranks)
+                   if enqueue_rows else missing)
         diagnosed_slow = sorted(set(slow_ranks) | set(compute_root))
-        status = ("MISSING_COMPLETION" if missing or incomplete else
+        status = ("HANG_MISSING_RANK" if missing else
+            "HANG_ALL_RANKS" if incomplete and len(incomplete) == expected else
+            "HANG_PARTIAL_COMPLETION" if incomplete else
             "MIXED_SLOW" if slow_diagnosis == "MIXED" else
             "COMPUTATION_SLOW" if slow_diagnosis == "COMPUTATION_SLOW" else
             "COUNT_MISMATCH" if (count_mismatch and not topology_pending) else
@@ -889,4 +906,27 @@ def analyze_progress_samples(records, *, stagnant_intervals=3):
                                     else "RANK_PROGRESS_STALLED")
             result["evidence"]["stalled_intervals"] = stalled
             results.append(result)
+    return results
+
+def analyze_non_collective_hang(records):
+    """Report an externally marked hang after collective completion.
+
+    The communication trace cannot attribute a post-collective hang to a rank;
+    an explicit application/monitor event is therefore surfaced as an
+    unlocalized non-communication hang instead of inventing a communication
+    root cause.
+    """
+    results = []
+    for row in records:
+        if row.get("phase") != "hang" or row.get("scope") not in ("non_collective", "non_communication"):
+            continue
+        result = {"comm_id": str(row.get("comm_id", "unknown")),
+                  "counter": str(row.get("counter", "unknown")),
+                  "status": "NON_COMMUNICATION_HANG_UNLOCALIZED",
+                  "ranks": sorted(row.get("ranks", [])),
+                  "evidence": {"event": row}}
+        result.update(_root_cause("NON_COMMUNICATION_HANG_UNLOCALIZED"))
+        result["root_cause"] = "NON_COMMUNICATION_HANG_UNLOCALIZED"
+        result["confidence"] = "high"
+        results.append(result)
     return results

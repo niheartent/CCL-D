@@ -9,7 +9,7 @@ import time
 from ccld_analyze import (analyze, analyze_completions,
                           analyze_completion_windows, analyze_progress_samples,
                           analyze_operation_semantics,
-                          load_records)
+                          load_records, analyze_non_collective_hang)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -51,10 +51,13 @@ def main():
                 min_slow_windows=max(2, args.slow_window // 2))
         results += analyze_progress_samples(
             records, stagnant_intervals=args.stagnant_intervals)
+        results += analyze_non_collective_hang(records)
         for result in results:
             status = result["status"]
             anomaly = status in ("MISMATCH", "MISSING_RANK", "ENQUEUE_SKEW",
-                                 "COUNT_MISMATCH", "MISSING_COMPLETION", "COMM_SLOW",
+                                 "COUNT_MISMATCH", "HANG_MISSING_RANK",
+                                 "HANG_PARTIAL_COMPLETION", "HANG_ALL_RANKS", "COMM_SLOW",
+                                 "NON_COMMUNICATION_HANG_UNLOCALIZED",
                                  "COMM_SLOW_WINDOW", "COMM_STALLED",
                                  "COMPUTATION_SLOW", "MIXED_SLOW",
                                  "P2P_PEER_MISSING", "P2P_TRANSFER_MISMATCH", "BROADCAST_ROLE_MISMATCH",

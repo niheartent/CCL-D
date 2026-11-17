@@ -17,7 +17,7 @@ run_case() {
   if ! grep -q "\"status\": \"$expected\"" "$OUT/$name.monitor.jsonl"; then cat "$OUT/$name.monitor.jsonl" >&2; return 1; fi
   echo "$name: PASS ($expected)"
 }
-run_case stall stall MISSING_COMPLETION
+run_case stall stall HANG_PARTIAL_COMPLETION
 run_case slow slow COMM_SLOW
-run_case missing missing MISSING_COMPLETION
+run_case missing missing HANG_MISSING_RANK
 echo "fault_simulation_matrix=PASS dir=$OUT"

@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ccld_analyze import (analyze, analyze_completions,
                           analyze_completion_windows, analyze_progress_samples,
-                          analyze_operation_semantics,
+                          analyze_operation_semantics, analyze_non_collective_hang,
                           load_records)
 
 
@@ -21,6 +21,13 @@ def record(rank, *, op="AllReduce", byte_count=4096, ts=1_000_000_000,
 
 
 class CcldAnalyzeTest(unittest.TestCase):
+    def test_non_collective_hang_is_explicitly_unlocalized(self):
+        result = analyze_non_collective_hang([{
+            "phase": "hang", "scope": "non_collective",
+            "comm_id": "abcd", "counter": 9, "ranks": [0, 1, 2]}])[0]
+        self.assertEqual(result["status"], "NON_COMMUNICATION_HANG_UNLOCALIZED")
+        self.assertEqual(result["root_cause"], "NON_COMMUNICATION_HANG_UNLOCALIZED")
+
     def test_p2p_edges_are_checked_reciprocally(self):
         rows = [record(0, op="Send"), record(1, op="Recv")]
         rows[0]["root"] = rows[1]["root"] = 1
@@ -201,7 +208,7 @@ class CcldAnalyzeTest(unittest.TestCase):
                  "rank": 1, "nranks": 2, "send_count": 8, "recv_count": 8,
                  "complete": False}]
         result = analyze_completions(rows)[0]
-        self.assertEqual(result["status"], "MISSING_COMPLETION")
+        self.assertEqual(result["status"], "HANG_PARTIAL_COMPLETION")
         self.assertEqual(result["incomplete_ranks"], [1])
 
     def test_enqueue_without_completion_waits_for_timeout(self):
@@ -212,7 +219,7 @@ class CcldAnalyzeTest(unittest.TestCase):
         self.assertEqual(pending["status"], "PENDING")
         expired = analyze_completions([row], now_ns=3_000_000_000,
                                       timeout_ms=1000)[0]
-        self.assertEqual(expired["status"], "MISSING_COMPLETION")
+        self.assertEqual(expired["status"], "HANG_ALL_RANKS")
 
     def test_completion_rate_outlier_is_detected(self):
         rows = []
