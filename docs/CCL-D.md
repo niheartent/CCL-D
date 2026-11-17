@@ -1,33 +1,29 @@
-# CCL-D 复现规格
+# CCL-D 当前设计
 
-CCL-D 在 RCCL 通信路径记录 TraceID 和按 channel 的收发计数。kernel 更新 pinned body，完成事件通知 diagnose thread；线程读取 frame、计算速率并输出 JSONL，分析器按 Ring 全 rank、Tree 同层 rank 判断 slow/hang。
+## 数据结构
 
-## 数据布局
+`TraceId` 固定为 60 字节：`commId` 8 字节、`counter` 8 字节、预留区 44 字节。预留区没有字段定义，也不参与分析。
 
-- `TraceId`：`commId(8) + counter(8) + reserved[44]`，总计 60 bytes。预留区当前不定义、不读取、不参与决策。
-- `Header`：`kernelIndex`、`mode`、`counter`、`detectChannel`、TraceID。
-- 每个 block 的 body：每个 channel 只有 `sendCount` 和 `recvCount` 两个 64-bit 计数。
-- `CCLD_SLOTS` 在运行时决定 block 数量；复用前检查 counter，active block 不覆盖。
+每个 pinned frame 由多个 slot 组成。slot header 包含 `kernelIndex`、`mode`、`counter`、`detectChannel` 和 `traceId`。每个 channel 只有两个 64 位字段：`sendCount` 和 `recvCount`。
 
-## 诊断流程
+## 身份和生命周期
 
-1. enqueue 分配一个 free block 并初始化 header/body；无 free block 时写入 `OBSERVATION_DROPPED`，通信继续。
-2. device kernel 按 block/channel 原子累加 send/recv。
-3. callback 只排队完成 counter；diagnose thread 只采样该 TraceID 已登记的 channel，写入 enqueue、sample、complete JSONL，然后释放 block。sample 记录中的 `send_rate/recv_rate` 是一个采样周期内的 count 增量，`send_frequency_hz/recv_frequency_hz` 是按实际采样间隔换算的派生值。
-4. communicator destroy 前 drain 队列并回收诊断状态。
-5. analyzer 使用 host 进入状态、完成状态、开始/结束时间、send/recv rate，以及 Ring/Tree 拓扑位置做判断；slow 使用收发速率证据，停滞判断按 `node/local_ranks/local_rank` 在节点内比较。
+TraceID counter 直接使用 RCCL 通信域 `opCount`，RecordPool 只选择空闲 slot。grouped P2P 的多个 Send/Recv 共享父 counter。首次 enqueue 初始化 slot，后续同 counter 调用复用 slot，不清零已有计数。所有 plan callback 完成后才关闭 header、释放 slot并输出 complete。
 
-## 运行时验证
+slot 不足时输出 `OBSERVATION_DROPPED`，不等待、不覆盖活动 slot、不影响通信。
 
-```bash
-export RCCL_CCLD_ENABLE=1
-export RCCL_CCLD_LOG=/workspace/CCL-D/results/rank-{rank}.jsonl
-export RCCL_CCLD_MODE=1
-export RCCL_CCLD_SLOTS=32
-export RCCL_CCLD_SAMPLE_US=1000
-# Optional host-side initial capacity for a plan's counter list.
-export RCCL_CCLD_PLAN_COUNTER_INITIAL=8
-python3 tools/ccld_monitor.py '/workspace/CCL-D/results/rank-*.jsonl' --once --all
-```
+## 线程模型
 
-host 单测：`python3 -m unittest discover -s tools/tests -v`。gfx936 独立构建和产物位于 `rccl-artifacts/ccld-frame-gfx936/`。
+每个 communicator 启动独立 diagnose thread，周期读取 pinned frame、输出 sample，并在 kernel callback 通知后 drain 完成事件；communicator 销毁时停止并 join。legacy collTrace 使用 `RCCL_COLLTRACE_SAMPLE_US`，CCL-D 使用 `RCCL_CCLD_SAMPLE_US`。
+
+## 采样指标
+
+sample 记录包含当前 count、采样周期内的 `send_delta`/`recv_delta`，以及同义的 `send_rate`/`recv_rate` 增量。`send_frequency_hz` 和 `recv_frequency_hz` 是按实际间隔换算的派生字段。slow 判断只使用采样增量。
+
+## 拓扑和决策
+
+Ring 按 channel 比较全 rank；Tree 从 `tree_up`、`tree_down*` 和深度重建层级，按 channel、层级、父子角色分组。hang 状态为 `HANG_MISSING_RANK`、`HANG_PARTIAL_COMPLETION`、`HANG_ALL_RANKS`；计数异常为 `COUNT_MISMATCH`；slow 状态为 `COMM_SLOW`、`COMPUTATION_SLOW`、`MIXED_SLOW`。集合通信完成后的外部 hang 输出 `NON_COMMUNICATION_HANG_UNLOCALIZED`。
+
+## 当前边界
+
+源码和 host analyzer 已完成静态检查。新的 gfx936 编译、协议逐路径运行、双节点故障注入和训练级资源开销仍需验证。

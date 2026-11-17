@@ -1,10 +1,29 @@
-# CCL-D 最小验收计划
+# CCL-D 验证计划
 
-每次实验保存源码 commit、构建前缀、环境变量、rank 映射、原始 JSONL 和 analyzer 输出。
+## 编译前
 
-1. **结构核对**：检查 TraceID 字段、header 字段、每个 channel 的 send/recv body、mode 0/1/2，以及 hostcallback 完成通知；不通过则不做性能实验。
-2. **协议核对**：用已知消息规模分别触发 Simple、LL、LL128，核对每个 channel 的 send/recv 数值、TraceID 归属和 callback 完成时间；协议选择从 RCCL planner 的 algorithm/protocol 元数据读取，不增加协议专用计数矩阵。
-3. **决策核对**：用真实可控的未进入、部分 rank 停滞、全体停滞和单 rank 低速场景，验证根因 rank、收发计数和 sendRate/recvRate 证据。JSON 合成数据只作为单元测试；已完成的操作不再进入 stalled 判定。
-4. **拓扑核对**：运行 Ring 和 Tree，Ring 比较全 rank，Tree 按层比较；保存实际邻居/层级和每轮输入。
-5. **容量核对**：使用固定验收值 `RCCL_CCLD_SLOTS=512` 进行多节点压力运行，检查没有观测丢失；另用较小容量确认 active block 不被覆盖，容量不足只输出 `OBSERVATION_DROPPED`，通信结果仍必须正确。
-6. **开销核对**：对比关闭/开启诊断的吞吐、延迟、CPU 和 pinned memory。任何通信错误都判为失败。
+```bash
+git diff --check
+python3 -m unittest discover -s tools/tests -q
+bash tools/tests/run_fault_simulation_matrix.sh
+```
+
+新的 gfx936 验证必须使用新的安装前缀。
+
+## 基本回归
+
+在 gfx936 上验证 AllGather、ReduceScatter、Broadcast、AllToAll、P2P 和 AllReduce，检查 TraceID counter、grouped P2P 父身份、每 channel 收发计数、slot 回收和资源耗尽策略。
+
+## 决策树场景
+
+1. rank 不进入 collective：`HANG_MISSING_RANK`。
+2. 已进入但部分 rank 未完成：`HANG_PARTIAL_COMPLETION`。
+3. 全部进入且全部未完成：`HANG_ALL_RANKS`。
+4. rank 2 少 1024B：`COUNT_MISMATCH` 和 rank 2 首错证据。
+5. collective 前 rank 2 延迟 3 秒：`COMPUTATION_SLOW`。
+6. 每次通信后增加 2 微秒延迟：`COMM_SLOW` 和异常 rank。
+7. collective 完成后外部上报 hang：`NON_COMMUNICATION_HANG_UNLOCALIZED`。
+
+## 性能
+
+关闭和开启 CCL-D 使用同一 workload，对比训练耗时、吞吐、loss、diagnose thread CPU、pinned memory 峰值和 GPU 开销，按 1% 参考口径记录。

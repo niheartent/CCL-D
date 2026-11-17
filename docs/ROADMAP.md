@@ -1,9 +1,13 @@
-# CCL-D 后续验证
+# CCL-D 工作边界
 
-当前双节点基线固定使用 `RCCL_CCLD_SLOTS=512`。HPDPS-6/7 的 8 rank 五算子回归已通过，10 轮、4096 个 float、2800 条 complete、0 条观测丢失，monitor 结果全部为 `OK`。
+当前源码模块：
 
-接下来完成以下验证：
+1. TraceID 与 RCCL `opCount` 身份；
+2. pinned frame、slot 生命周期和资源耗尽策略；
+3. 独立 diagnose thread 与 kernel callback；
+4. 采样 count 增量；
+5. Ring/Tree 拓扑位置比较；
+6. slow/hang analyzer；
+7. 运行时配置和 fault simulation。
 
-1. 增加同一 group 内多 work 并发的 512-slot 双节点压力测试，检查并发 enqueue 时的 block 生命周期、`OBSERVATION_DROPPED` 和每 rank 完成比例。100 轮串行五算子回归已通过，证明长迭代基线稳定，但没有覆盖 grouped work 并发。
-
-LL128 边界已确认：本构建的 `CMakeLists.txt` 以 `if(0)` 禁用 `ENABLE_LL128`；即使启用，HIP kernel 生成代码也只对 `__gfx90a__` 生成 LL128，gfx936 不会生成该路径。planner 另外要求 `RCCL_TOPO_XGMI_ALL`。因此当前 gfx936 双节点的 Ring+LL128 `internal error` 属于 RCCL 构建/架构支持边界，不是 CCL-D 运行时故障；不再将它列为本环境待验收协议。
+当前阶段只进行编译前静态审计。完成静态审计后，使用独立安装前缀编译 gfx936，再执行双节点验证和 AntCCL 评测场景。
